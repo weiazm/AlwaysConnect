@@ -56,7 +56,7 @@ cargo test                    # 逻辑 + FFI 测试
 cargo test --features openconnect  # 含 libopenconnect 绑定冒烟测试（需 libopenconnect-dev）
 ```
 
-核心模块：`rules`（分流规则引擎）、`dns_routes`（DNS 驱动的动态路由）、`backoff`（重连退避）、`state_machine`（会话状态机）、`ffi`（给 Swift 的 C ABI）、`openconnect`（libopenconnect 绑定，需 feature 开启）。
+核心模块：`rules`（分流规则引擎）、`dns_routes`（DNS 驱动的动态路由）、`backoff`（重连退避）、`state_machine`（会话状态机）、`session`（会话驱动）、`pf`（pf 兜底规则生成）、`ffi`（给 Swift 的 C ABI）、`openconnect`（libopenconnect 绑定，需 feature 开启）。
 
 ## CI（无本地 Mac 时的验证闭环）
 
