@@ -58,6 +58,10 @@ cargo test --features openconnect  # 含 libopenconnect 绑定冒烟测试（需
 
 核心模块：`rules`（分流规则引擎）、`dns_routes`（DNS 驱动的动态路由）、`backoff`（重连退避）、`state_machine`（会话状态机）、`ffi`（给 Swift 的 C ABI）、`openconnect`（libopenconnect 绑定，需 feature 开启）。
 
+## CI（无本地 Mac 时的验证闭环）
+
+`.github/workflows/ci.yml`：Ubuntu 跑 Rust 全量测试（含 libopenconnect 认证对本地 ocserv）；macOS runner 跑核心测试、编 Rust staticlib、用 XcodeGen 生成工程并以 `CODE_SIGNING_ALLOWED=NO` 编译整个 App（只验编译和 Swift↔Rust 链接）。CI 验不了真实网关、SeaTalk 批准、真实断线——那几项仍需可信 Mac（Phase 0）。
+
 ## 在 Mac 上构建（待 Phase 0）
 
 前置条件：

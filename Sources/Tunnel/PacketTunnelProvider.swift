@@ -32,6 +32,26 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     private var state: State = .disconnected
     private var reconnectAttempt = 0
 
+    /// Rule engine (Rust core) for split decisions. Wired now; the
+    /// packet pump and auth driver plug into it in Phase 0/1.
+    private var ruleEngine: RustRuleEngine?
+
+    /// Build the rule engine from a profile + rules (called by the App
+    /// via provider configuration, and by startTunnel).
+    func configureEngine(profile: Profile, rules: [Rule]) {
+        let engine = RustRuleEngine(defaultMode: profile.defaultMode)
+        for rule in rules {
+            engine.addRule(rule)
+        }
+        ruleEngine = engine
+    }
+
+    /// Split decision for one connection. Fails closed to VPN when the
+    /// engine is not configured yet.
+    func shouldUseVPN(app: String, domain: String, ip: String) -> Bool {
+        ruleEngine?.shouldUseVPN(app: app, domain: domain, ip: ip) ?? true
+    }
+
     override func startTunnel(options: [String: NSObject]?) async throws {
         // TODO (Phase 0/1):
         // 1. Read Profile + credentials from the App Groups container
@@ -43,6 +63,8 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         //    excludedRoutes = 192.168.0.0/16 (home LAN), tunnel DNS from
         //    the gateway, DNS proxy for rule domains.
         // 4. Start the reconnect watchdog (keepalive timeout -> reconnect).
+        // 5. Wire the packet pump: packetFlow <-> libopenconnect tunnel,
+        //    consulting shouldUseVPN(app:domain:ip:) per connection.
         throw NEVPNError(.configurationInvalid)
     }
 
@@ -51,6 +73,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         // - .userInitiated: tear down utun/routes, clear pf rules.
         // - anything else: keep routes installed, keep retrying (fail-closed).
         // TODO (Phase 1): implement the two paths.
+        ruleEngine = nil
     }
 
     override func handleAppMessage(_ messageData: Data) async -> Data? {

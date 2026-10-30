@@ -7,7 +7,7 @@ license = "GPL-3.0-or-later"
 
 [lib]
 name = "alwaysconnect_core"
-crate-type = ["cdylib", "rlib"]
+crate-type = ["cdylib", "rlib", "staticlib"]
 
 [features]
 default = []

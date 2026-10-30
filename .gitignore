@@ -1,2 +1,4 @@
 core/target/
 core/Cargo.lock
+AlwaysConnect.xcodeproj/
+xcuserdata/
