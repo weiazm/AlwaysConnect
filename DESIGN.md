@@ -107,6 +107,7 @@
   - 子进程继承：被排除应用拉起的子进程同样被排除，但经 Finder、登录项或 open 命令拉起的不算。
   - 逆向模式在 macOS 上不成熟：IVPN 明确说明"仅选定应用走 VPN、其余直连"的逆向模式在 macOS 上暂不可用（Windows/Linux 有）。影响：我们的分流模式下，应用级"纳入 VPN"规则能否实现需 Phase 0 验证；若不可行，分流模式的应用规则降级为"排除制 + 提示"，不硬上。
   - Safari 排除受限：多数厂商无法把 Safari 排除出隧道（系统限制），PIA 需用特殊的 WebKit 规则且连带影响 Mail 与地图。我们的应用规则对 Safari 做同样提示，不承诺。
+- 接线进展：Proxy 已链接 Rust staticlib（Bridge 目录复用 Tunnel 的 RustCore.swift），handleNewFlow 已能按 sourceAppSigningIdentifier + remoteHostname + TCP 端点 IP 做直接放行判定（directEgress，引擎未配置时一律走 VPN）；数据泵（NWConnection 转发）仍是 Phase 2，在此之前直接命中的流也先走 VPN（安全方向，不漏网）。
 
 ### 4.4 分离 DNS：Tailscale Split DNS
 - 机制：按域名选解析器。Tailscale 的 Split DNS 把特定域名的解析指到特定 DNS 服务器，其余走正常 DNS。
@@ -143,13 +144,15 @@
 
 ### 1. UI 层（App）
 菜单栏面板、主窗口、首次向导、规则编辑（卡片 + 模板）、规则测试器、泄漏自检、统计页、通知。见第三节。
+- App 侧接线已落地：KeychainStore 真实现（generic password，AfterFirstUnlock）、ProfileStore（App Groups 非敏感持久化）、TunnelManager（NETunnelProviderManager 建/存/启/停 + 状态观察 + lastError）、菜单栏面板开关接线与启动自动连接；凭据收集 UI（Settings）仍是 Phase 2。
 
 ### 2. 凭据与会话层
 - 存储：账号、密码、服务器、Group 只存 macOS Keychain（generic password），不写明文文件、不进日志。Touch ID 仅用于"查看/修改凭据"，不 gate 自动登录（否则自动登录会被打断）。
 - 启动自动登录：App 启动 → 读 Keychain → 起 Provider → Provider 用保存的凭据认证，全程无弹窗。
 - 会话恢复：断线重连优先用原会话恢复（网关会话保持窗口内免 2FA），这是用户实测确认的行为。
 - 等批准态：网关要求重新批准时，Provider 上报 awaiting-approval 状态，App 通知 + 菜单栏变黄并持续等待；网关超时关闭尝试后，Provider 自动再发起一次（会再推一条批准消息），直到连上或用户手动断开。
-- 实现：Rust 核 `core/src/session.rs`（SessionDriver + SessionRecord + AuthOutcome + DriverAction），决策逻辑与退避、状态机复用；认证结果到 AuthOutcome 的映射在 FFI 边界做（Phase 1）。
+- 实现：Rust 核 `core/src/session.rs`（SessionDriver + SessionRecord + AuthOutcome + DriverAction），决策逻辑与退避、状态机复用；认证结果到 AuthOutcome 的映射已落地（`core/src/openconnect.rs` 的 map_auth_error：Obtain(-1)→Rejected，为回调拒填约定；其他 Obtain 码与 NoCookie→Transient；ParseUrl/CaFile→Rejected）。
+- NeedsApproval 在阻塞等待中的上报仍是缺口：obtain_cookie 在等 push 时是阻塞的，驱动要实时知道"在等批准"，需表单回调在看到无凭据字段的 push 形表单时通知驱动，并用 openconnect_set_cancel_fd 实现批准超时中断——两者都需真实网关的表单形状验证，挂起到有 Mac + 真实网关。
 - 会话恢复的边界（2026-10-30 更正：此前“库路径无 Cookie 注入公开函数”的说法是错的，错在信了二手 API 总结；本地 9.12 头文件原文为准）：`openconnect_set_cookie()` 存在（openconnect.h:669，另有 clear_cookie :670），因此新进程走库路径也能用已存 Cookie 恢复（set_cookie 后建连接），SessionRecord 两条路线都能用。进程内存活的 vpninfo 掉线后靠 mainloop 原地重连仍是最快路径；Cookie 被拒或过期则回落完整认证（可能需批准）。驱动不猜 Cookie 过期：有效性只由服务器对重连尝试的响应证明，不用计时器。
 - 状态机扩展：原机没有\"认证被拒\"的终态路径和连接中/认证中的手动断开路径，驱动需要，`state_machine` 增加 AuthRejected（认证中 → 已断开）与 ManualDisconnect（连接中/认证中 → 已断开）。
 
@@ -173,6 +176,7 @@
 - 故障关闭第一道（主防线）：掉线后 Provider 不拆除 utun、不撤销路由，数据面停止转发，流量黑洞丢弃。系统路由仍指向隧道，物理网卡收不到外发流量，因此不可能"回落本地"。
 - 故障关闭第二道（pf 兜底，需特权 Helper）：pf 锚点规则——物理网卡出方向默认拒绝，仅放行 192.168.0.0/16、DHCP（获取局域网地址必需）与本地回环。Provider 异常退出时规则仍在，不漏网。
 - 实现：`core/src/pf.rs` 生成锚点文本（纯文本生成，加载/卸载归 Helper 的 pfctl 调用）。关键约束：网关 IP 必填——没有它 pf 会把重连自身的路也挡住，客户端断线后永远连不回来；所以 Helper 只在隧道起来后（网关 IP 已知）才装规则，装之前没有隧道、没有可漏的流量。另放行 mDNS 与 fe80::/10；pfctl 是最终校验，加载失败必须上报用户、不得静默跳过。
+- Helper 已接 pf 生成：`AlwaysConnectHelper generate-pf`（经 C ABI 调 Rust 核）在 stdout 输出锚点文本；CI 在 macOS runner 上实跑并校验输出（含无网关时失败）。pfctl 加载/卸载随 LaunchDaemon 安装来（Phase 2，需 root 与 Mac）。
 - 手动断开 vs 意外掉线严格区分：只有手动断开才恢复本地网络、清除 pf 规则；意外掉线一律保持拦截，直到连上或用户手动断开。
 - 拦截期间的用户可见状态：菜单栏变红，面板显示"已断开，网络已拦截，正在重连（第 N 次）"，而不是假装在线。
 

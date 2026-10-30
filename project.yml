@@ -26,6 +26,7 @@ targets:
     platform: macOS
     sources:
       - Sources/Tunnel
+      - Sources/Bridge
       - Sources/Shared
     settings:
       PRODUCT_BUNDLE_IDENTIFIER: com.alwaysconnect.app.tunnel
@@ -42,9 +43,13 @@ targets:
     platform: macOS
     sources:
       - Sources/Proxy
+      - Sources/Bridge
       - Sources/Shared
     settings:
       PRODUCT_BUNDLE_IDENTIFIER: com.alwaysconnect.app.proxy
+      # Same staticlib link as the Tunnel: the proxy's direct-egress
+      # decision calls the same ac_engine_* symbols.
+      OTHER_LDFLAGS: $(PROJECT_DIR)/core/target/release/libalwaysconnect_core.a
     info:
       path: Sources/Proxy/Info.plist
     entitlements:
@@ -57,9 +62,13 @@ targets:
       - Sources/Shared
     settings:
       PRODUCT_BUNDLE_IDENTIFIER: com.alwaysconnect.app.helper
+      # Same staticlib link: the Helper's generate-pf command calls
+      # ac_pf_generate / ac_string_free.
+      OTHER_LDFLAGS: $(PROJECT_DIR)/core/target/release/libalwaysconnect_core.a
 
 schemes:
   AlwaysConnect:
     build:
       targets:
         AlwaysConnect: all
+        AlwaysConnectHelper: all

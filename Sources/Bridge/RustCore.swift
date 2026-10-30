@@ -2,8 +2,10 @@ import Foundation
 
 /// Swift wrapper over the Rust core's C ABI (see core/src/ffi.rs).
 /// Symbol names must match the #[no_mangle] exports exactly.
-/// This file lives in the Tunnel target only: the App and Proxy targets
-/// adopt it when they link the Rust staticlib (Phase 1).
+/// This file lives in Sources/Bridge, compiled into the Tunnel and Proxy
+/// targets (both link the Rust staticlib); the App target does NOT
+/// include it and does NOT link the staticlib, so it must stay out of
+/// Sources/Shared.
 ///
 /// Threading: the engine is confined to the caller's queue (the provider
 /// queue here). The Rust side is Mutex-protected, but this class itself

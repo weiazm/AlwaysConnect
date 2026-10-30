@@ -300,6 +300,76 @@ pub extern "C" fn ac_session_manual_disconnect(
     encode_action(action, delay_secs_out)
 }
 
+// ---- pf anchor generation (core/src/pf.rs) ----
+//
+// ac_pf_generate returns a malloc'd C string the caller frees with
+// ac_string_free, or null on bad input (null pointers, non-UTF8,
+// invalid networks/IPs, empty gateway list). The two list arguments
+// are comma-separated; surrounding whitespace is trimmed; an empty
+// allow list is valid (no allow lines in the output).
+
+use crate::pf::{PfInput, PfError};
+use std::ffi::CString;
+
+fn split_csv(s: &str) -> Vec<String> {
+    if s.trim().is_empty() {
+        return Vec::new();
+    }
+    s.split(',')
+        .map(|part| part.trim().to_owned())
+        .filter(|part| !part.is_empty())
+        .collect()
+}
+
+fn read_cstr(p: *const c_char) -> Option<String> {
+    if p.is_null() {
+        return None;
+    }
+    unsafe { CStr::from_ptr(p).to_str().ok().map(|s| s.to_owned()) }
+}
+
+#[no_mangle]
+pub extern "C" fn ac_pf_generate(
+    physical_if: *const c_char,
+    tunnel_if: *const c_char,
+    gateway_ips_csv: *const c_char,
+    allow_networks_csv: *const c_char,
+) -> *mut c_char {
+    let (Some(physical_if), Some(tunnel_if), Some(gateway_ips_csv), Some(allow_networks_csv)) = (
+        read_cstr(physical_if),
+        read_cstr(tunnel_if),
+        read_cstr(gateway_ips_csv),
+        read_cstr(allow_networks_csv),
+    ) else {
+        return std::ptr::null_mut();
+    };
+    let input = PfInput {
+        physical_if,
+        tunnel_if,
+        gateway_ips: split_csv(&gateway_ips_csv),
+        allow_networks: split_csv(&allow_networks_csv),
+    };
+    match crate::pf::generate(&input) {
+        Ok(text) => match CString::new(text) {
+            Ok(c) => c.into_raw(),
+            Err(_) => std::ptr::null_mut(),
+        },
+        Err(PfError::EmptyInterface)
+        | Err(PfError::EmptyGateway)
+        | Err(PfError::BadNetwork(_))
+        | Err(PfError::BadIp(_)) => std::ptr::null_mut(),
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn ac_string_free(s: *mut c_char) {
+    if !s.is_null() {
+        unsafe {
+            drop(CString::from_raw(s));
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -398,5 +468,49 @@ mod tests {
         assert_eq!(ac_session_state(h), 1);
         ac_session_free(null);
         ac_session_free(h);
+    }
+
+    #[test]
+    fn pf_abi_generate_and_free() {
+        let phys = c("en0");
+        let tun = c("utun5");
+        let gw = c("203.0.113.10");
+        let allow = c("192.168.0.0/16");
+        let out = ac_pf_generate(
+            phys.as_ptr(),
+            tun.as_ptr(),
+            gw.as_ptr(),
+            allow.as_ptr(),
+        );
+        assert!(!out.is_null());
+        let text = unsafe { CStr::from_ptr(out).to_str().unwrap().to_owned() };
+        assert!(text.contains("block drop out quick on en0 all\n"));
+        assert!(text.contains("pass out quick on en0 to 203.0.113.10\n"));
+        ac_string_free(out);
+        // Bad input yields null, never a crash.
+        assert!(ac_pf_generate(
+            std::ptr::null(),
+            tun.as_ptr(),
+            gw.as_ptr(),
+            allow.as_ptr()
+        )
+        .is_null());
+        let empty_gw = c("");
+        assert!(ac_pf_generate(
+            phys.as_ptr(),
+            tun.as_ptr(),
+            empty_gw.as_ptr(),
+            allow.as_ptr()
+        )
+        .is_null());
+        let bad_net = c("10.0.0.0/33");
+        assert!(ac_pf_generate(
+            phys.as_ptr(),
+            tun.as_ptr(),
+            gw.as_ptr(),
+            bad_net.as_ptr()
+        )
+        .is_null());
+        ac_string_free(std::ptr::null_mut());
     }
 }

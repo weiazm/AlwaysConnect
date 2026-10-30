@@ -21,14 +21,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var panelController: PanelController?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        let profile = ProfileStore.loadProfile()
+        panelController = PanelController(manager: TunnelManager.shared, profile: profile)
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         statusItem?.button?.title = "AC"
+        statusItem?.button?.target = self
+        statusItem?.button?.action = #selector(togglePanel(_:))
         // TODO (Phase 1): replace the placeholder title with a status icon
         // (color + shape: green solid = connected, yellow triangle = awaiting
-        // approval/connecting, red hollow = disconnected with kill switch on).
-        // TODO (Phase 1): attach the popover panel (switch, one-line status,
-        // mode, last drop, shortcuts to Rules/Statistics) and wire it to the
-        // tunnel manager (NETunnelProviderManager) + shared SessionState.
+        // approval/connecting, red hollow = disconnected with kill switch on),
+        // driven by TunnelManager.shared.status.
+        // Auto-connect on launch when credentials are stored.
+        if profile.autoConnectOnLaunch,
+           let username = ProfileStore.loadUsername(), !username.isEmpty,
+           let password = KeychainStore.read(server: profile.server, username: username) {
+            TunnelManager.shared.loadOrCreate(profile: profile, username: username, password: password) { error in
+                if error == nil {
+                    TunnelManager.shared.start { _ in }
+                }
+            }
+        }
+    }
+
+    @objc private func togglePanel(_ sender: Any?) {
+        guard let button = statusItem?.button else { return }
+        panelController?.toggle(relativeTo: button)
     }
 
     func applicationWillTerminate(_ notification: Notification) {

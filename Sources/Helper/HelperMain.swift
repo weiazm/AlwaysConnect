@@ -13,13 +13,66 @@ import Foundation
 ///   unexpected drop — even if the tunnel provider process dies, the pf
 ///   rules keep holding the line.
 ///
-/// TODO (Phase 2): implement with pf anchors via a small C helper or
-/// pfctl invocation from the daemon. Validate across macOS upgrades.
+/// This binary's current surface is deliberately small: it generates the
+/// pf anchor text (Rust core) on stdout so the install path and the CI
+/// runner can verify generation without touching the live packet filter.
+/// Loading (`pfctl -a ANCHOR -f file`) and removal (`pfctl -a ANCHOR -F
+/// rules`) arrive with the LaunchDaemon installation (Phase 2); they need
+/// root and a Mac, so they are not faked here.
+///
+/// Usage:
+///   AlwaysConnectHelper generate-pf --phys <if> --tun <if>
+///       --gateway <ip[,ip...]> [--allow <cidr[,cidr...]>]
+/// Exit codes: 0 success, 1 generation rejected, 2 usage error.
 @main
 struct HelperMain {
     static func main() {
-        // TODO (Phase 2)
-        fputs("AlwaysConnectHelper: not implemented yet (Phase 2)\n", stderr)
-        exit(1)
+        var args = CommandLine.arguments.dropFirst()
+        guard args.first == "generate-pf" else {
+            usage()
+            exit(2)
+        }
+        args = args.dropFirst()
+        var phys: String?
+        var tun: String?
+        var gateway: String?
+        var allow: String?
+        while let flag = args.first {
+            args = args.dropFirst()
+            guard let value = args.first else {
+                fputs("missing value for \(flag)\n", stderr)
+                exit(2)
+            }
+            args = args.dropFirst()
+            switch flag {
+            case "--phys": phys = value
+            case "--tun": tun = value
+            case "--gateway": gateway = value
+            case "--allow": allow = value
+            default:
+                fputs("unknown flag: \(flag)\n", stderr)
+                exit(2)
+            }
+        }
+        guard let phys, let tun, let gateway else {
+            fputs("required: --phys, --tun, --gateway\n", stderr)
+            exit(2)
+        }
+        let gateways = gateway.split(separator: ",").map(String.init)
+        let allows = (allow ?? "").split(separator: ",").map(String.init)
+        guard let text = PfAnchor.generate(
+            physicalIf: phys,
+            tunnelIf: tun,
+            gatewayIps: gateways,
+            allowNetworks: allows
+        ) else {
+            fputs("pf generation rejected (bad interface, empty gateway, or invalid network/IP)\n", stderr)
+            exit(1)
+        }
+        print(text, terminator: "")
+    }
+
+    private static func usage() {
+        fputs("Usage: AlwaysConnectHelper generate-pf --phys <if> --tun <if> --gateway <ip[,ip...]> [--allow <cidr[,cidr...]>]\n", stderr)
     }
 }

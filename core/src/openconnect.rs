@@ -145,6 +145,28 @@ impl fmt::Display for AuthError {
 
 impl std::error::Error for AuthError {}
 
+/// Map an authentication failure to the session driver's outcome.
+/// Contract (callback convention): the auth-form callback returns -1
+/// exactly when it refuses to submit — unknown group, or a credential
+/// field it cannot fill (empty username/password). Other negative
+/// obtain_cookie codes are network-level failures and stay retryable.
+/// Trade-off, stated plainly: a transient failure that happens to
+/// return -1 stops auto-retry (the user reconnects manually once),
+/// which is preferable to hammering the gateway with the same rejected
+/// credentials on a loop (account lockout risk).
+pub fn map_auth_error(e: &AuthError) -> crate::session::AuthOutcome {
+    use crate::session::AuthOutcome;
+    match e {
+        // Broken configuration: retrying the same input is futile.
+        AuthError::ParseUrl | AuthError::CaFile => AuthOutcome::Rejected,
+        // Callback refusal: bad credentials or unknown group.
+        AuthError::Obtain(-1) => AuthOutcome::Rejected,
+        // Network-level failure, or a server that accepted auth but
+        // returned no cookie: retry with backoff.
+        AuthError::Obtain(_) | AuthError::NoCookie => AuthOutcome::Transient,
+    }
+}
+
 /// Read a possibly-null C string field as &str.
 unsafe fn opt_str<'a>(p: *const c_char) -> Option<&'a str> {
     if p.is_null() {
@@ -160,6 +182,14 @@ unsafe fn opt_str<'a>(p: *const c_char) -> Option<&'a str> {
 /// forms such as a push-approval notice). Returns 0 to submit, -1 on
 /// error. `privdata` points at the session's `Credentials` box, which
 /// outlives every callback invocation.
+///
+/// Phase 1 gap, documented not hidden: obtain_cookie BLOCKS while the
+/// server waits for a push approval, so the driver only learns
+/// "NeedsApproval" if this callback notifies it when it sees a
+/// push-style form (no fillable credential fields) — and the approval
+/// timeout needs openconnect_set_cancel_fd wired to abort the wait.
+/// Both need the real gateway's form shape to verify, so they stay
+/// unwired until a Mac + real gateway exists.
 unsafe extern "C" fn auth_form_callback(privdata: *mut c_void, form: *mut OcAuthForm) -> c_int {
     if privdata.is_null() || form.is_null() {
         return -1;
@@ -432,5 +462,33 @@ mod tests {
             group: None,
         });
         assert!(s.obtain_cookie(&url).is_err(), "wrong password must fail");
+    }
+
+    #[test]
+    fn auth_error_maps_to_driver_outcome() {
+        use crate::session::AuthOutcome;
+        // Broken configuration stops: retrying the same input is futile.
+        assert_eq!(
+            map_auth_error(&AuthError::ParseUrl),
+            AuthOutcome::Rejected
+        );
+        assert_eq!(
+            map_auth_error(&AuthError::CaFile),
+            AuthOutcome::Rejected
+        );
+        // Callback refusal (-1) stops: bad credentials / unknown group.
+        assert_eq!(
+            map_auth_error(&AuthError::Obtain(-1)),
+            AuthOutcome::Rejected
+        );
+        // Other failures retry with backoff.
+        assert_eq!(
+            map_auth_error(&AuthError::Obtain(-5)),
+            AuthOutcome::Transient
+        );
+        assert_eq!(
+            map_auth_error(&AuthError::NoCookie),
+            AuthOutcome::Transient
+        );
     }
 }

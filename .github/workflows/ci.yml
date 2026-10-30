@@ -1,7 +1,8 @@
 # CI: Rust tests on Linux (full, incl. libopenconnect auth against a
 # local ocserv gateway) and macOS (core tests + staticlib + Xcode build
 # with signing off). The macOS job is the no-local-Mac verification loop:
-# it proves the Swift shell compiles and links against the Rust core.
+# it proves the Swift shell compiles and links against the Rust core,
+# and runs the Helper's pf generation as a smoke check.
 # It does NOT prove a real gateway connection, SeaTalk approval, or
 # live traffic routing — those still need a trusted Mac (Phase 0).
 name: CI
@@ -53,3 +54,15 @@ jobs:
           xcodebuild -project AlwaysConnect.xcodeproj
           -scheme AlwaysConnect -destination 'platform=macOS'
           build CODE_SIGNING_ALLOWED=NO
+      - name: Run Helper (pf anchor smoke check)
+        # The scheme also builds AlwaysConnectHelper (a plain tool, no
+        # entitlements needed to run). Verify generation output, and
+        # that a missing gateway fails instead of silently passing.
+        run: |
+          HELPER=$(find ~/Library/Developer/Xcode/DerivedData/AlwaysConnect-*/Build/Products/Debug -maxdepth 1 -name AlwaysConnectHelper -type f | head -1)
+          test -n "$HELPER"
+          "$HELPER" generate-pf --phys en0 --tun utun5 --gateway 203.0.113.10 --allow 192.168.0.0/16 | grep -q "block drop out quick on en0 all"
+          if "$HELPER" generate-pf --phys en0 --tun utun5 --allow 192.168.0.0/16 2>/dev/null; then
+            echo "expected failure without --gateway" >&2
+            exit 1
+          fi
