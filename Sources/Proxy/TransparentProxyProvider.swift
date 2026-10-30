@@ -61,7 +61,9 @@ final class TransparentProxyProvider: NETransparentProxyProvider {
     /// a CIDR or the LAN check anyway). UDP flows contribute app +
     /// hostname only for now.
     private func extract(_ flow: NEAppProxyFlow) -> (app: String, domain: String, ip: String) {
-        let app = flow.metaData?.sourceAppSigningIdentifier ?? ""
+        // metaData is non-optional NEFlowMetaData (per the compiler);
+        // the signing identifier itself may be absent, hence ?? "".
+        let app = flow.metaData.sourceAppSigningIdentifier ?? ""
         let domain = flow.remoteHostname ?? ""
         var ip = ""
         if let tcp = flow as? NEAppProxyTCPFlow,
