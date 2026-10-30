@@ -33,6 +33,8 @@ targets:
       # cargo build --release in core/). Required because RustCore.swift
       # calls the ac_engine_* C ABI symbols.
       OTHER_LDFLAGS: $(PROJECT_DIR)/core/target/release/libalwaysconnect_core.a
+    info:
+      path: Sources/Tunnel/Info.plist
     entitlements:
       path: Sources/Tunnel/AlwaysConnectTunnel.entitlements
   AlwaysConnectProxy:
@@ -43,6 +45,8 @@ targets:
       - Sources/Shared
     settings:
       PRODUCT_BUNDLE_IDENTIFIER: com.alwaysconnect.app.proxy
+    info:
+      path: Sources/Proxy/Info.plist
     entitlements:
       path: Sources/Proxy/AlwaysConnectProxy.entitlements
   AlwaysConnectHelper:
