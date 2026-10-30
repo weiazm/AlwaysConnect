@@ -40,7 +40,7 @@ final class TunnelManager: ObservableObject {
             if let managers {
                 for m in managers {
                     if let t = m as? NETunnelProviderManager,
-                       t.providerProtocol?.providerBundleIdentifier == self.tunnelBundleId {
+                       (t.protocolConfiguration as? NETunnelProviderProtocol)?.providerBundleIdentifier == self.tunnelBundleId {
                         existing = t
                         break
                     }
@@ -62,7 +62,7 @@ final class TunnelManager: ObservableObject {
                 config["rulesJSON"] = rulesJSON
             }
             proto.providerConfiguration = config
-            manager.providerProtocol = proto
+            manager.protocolConfiguration = proto
             manager.localizedDescription = "AlwaysConnect"
             manager.isEnabled = true
             self.manager = manager
