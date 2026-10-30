@@ -14,8 +14,8 @@ targets:
       - Sources/Shared
     settings:
       PRODUCT_BUNDLE_IDENTIFIER: com.alwaysconnect.app
-      INFOPLIST_KEY_LSUIElement: true
-      INFOPLIST_KEY_CFBundleDisplayName: AlwaysConnect
+    info:
+      path: Sources/App/Info.plist
     entitlements:
       path: Sources/App/AlwaysConnect.entitlements
     dependencies:

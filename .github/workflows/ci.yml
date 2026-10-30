@@ -19,7 +19,9 @@ jobs:
       - name: Install system deps
         run: sudo apt-get update && sudo apt-get install -y libopenconnect-dev ocserv
       - name: Start test gateway
-        run: core/scripts/ocserv-test.sh start
+        # ocserv refuses to run without root ("This server requires root
+        # access to operate"); Actions runners have passwordless sudo.
+        run: sudo core/scripts/ocserv-test.sh start
       - name: Rust tests (incl. libopenconnect auth)
         working-directory: core
         env:
@@ -30,7 +32,7 @@ jobs:
         run: cargo test --features openconnect
       - name: Stop test gateway
         if: always()
-        run: core/scripts/ocserv-test.sh stop
+        run: sudo core/scripts/ocserv-test.sh stop
 
   macos:
     runs-on: macos-latest
