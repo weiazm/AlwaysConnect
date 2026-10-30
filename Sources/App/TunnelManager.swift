@@ -33,9 +33,19 @@ final class TunnelManager: ObservableObject {
                 completion(error)
                 return
             }
-            let existing = managers?
-                .compactMap { $0 as? NETunnelProviderManager }
-                .first(where: { $0.providerProtocol?.providerBundleIdentifier == self.tunnelBundleId })
+            // Explicit loop instead of a compactMap/first chain: the
+            // loadAllFromPreferences completion's element type does not
+            // infer cleanly into closure parameters on this SDK.
+            var existing: NETunnelProviderManager?
+            if let managers {
+                for m in managers {
+                    if let t = m as? NETunnelProviderManager,
+                       t.providerProtocol?.providerBundleIdentifier == self.tunnelBundleId {
+                        existing = t
+                        break
+                    }
+                }
+            }
             let manager = existing ?? NETunnelProviderManager()
             let proto = NETunnelProviderProtocol()
             proto.providerBundleIdentifier = self.tunnelBundleId
