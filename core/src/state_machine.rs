@@ -24,6 +24,10 @@ pub enum Event {
     Resumed,
     SessionDead,
     ManualDisconnect,
+    /// The server refused the credentials/session (added for the session
+    /// driver: the original machine had no terminal path for a rejected
+    /// authentication).
+    AuthRejected,
 }
 
 /// Returns the next state, or `None` for an illegal transition.
@@ -43,6 +47,12 @@ pub fn transition(state: SessionStatus, event: Event) -> Option<SessionStatus> {
         (Reconnecting, ManualDisconnect) => Some(Disconnected),
         (AwaitingApproval, ManualDisconnect) => Some(Disconnected),
         (Connected, ManualDisconnect) => Some(Disconnected),
+        // Driver extensions: rejected auth ends the attempt (the user must
+        // fix credentials and reconnect explicitly), and a manual
+        // disconnect is honored from every non-terminal state.
+        (Authenticating, AuthRejected) => Some(Disconnected),
+        (Connecting, ManualDisconnect) => Some(Disconnected),
+        (Authenticating, ManualDisconnect) => Some(Disconnected),
         _ => None,
     }
 }
@@ -83,6 +93,29 @@ mod tests {
     fn illegal_transition_rejected() {
         assert_eq!(
             transition(SessionStatus::Disconnected, Event::Resumed),
+            None
+        );
+    }
+
+    #[test]
+    fn driver_extensions() {
+        // Rejected auth ends the attempt.
+        assert_eq!(
+            transition(SessionStatus::Authenticating, Event::AuthRejected),
+            Some(SessionStatus::Disconnected)
+        );
+        // Manual disconnect honored mid-connect and mid-auth.
+        assert_eq!(
+            transition(SessionStatus::Connecting, Event::ManualDisconnect),
+            Some(SessionStatus::Disconnected)
+        );
+        assert_eq!(
+            transition(SessionStatus::Authenticating, Event::ManualDisconnect),
+            Some(SessionStatus::Disconnected)
+        );
+        // ...but not from Disconnected itself.
+        assert_eq!(
+            transition(SessionStatus::Disconnected, Event::ManualDisconnect),
             None
         );
     }

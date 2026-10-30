@@ -8,6 +8,7 @@ pub mod backoff;
 pub mod dns_routes;
 pub mod ffi;
 pub mod rules;
+pub mod session;
 pub mod state_machine;
 
 #[cfg(feature = "openconnect")]
