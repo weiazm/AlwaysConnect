@@ -48,35 +48,35 @@ final class RustSessionDriver {
     }
 
     func start() -> Action {
-        call { ac_session_start($0, &$1) }
+        call { ac_session_start($0, $1) }
     }
 
     func authenticated() -> Action {
-        call { ac_session_authenticated($0, &$1) }
+        call { ac_session_authenticated($0, $1) }
     }
 
     func drop(cookieAlive: Bool) -> Action {
-        call { ac_session_drop($0, cookieAlive, &$1) }
+        call { ac_session_drop($0, cookieAlive, $1) }
     }
 
     func reconnected() -> Action {
-        call { ac_session_reconnected($0, &$1) }
+        call { ac_session_reconnected($0, $1) }
     }
 
     func authOutcome(_ outcome: AuthOutcome) -> Action {
-        call { ac_session_auth_outcome($0, outcome.rawValue, &$1) }
+        call { ac_session_auth_outcome($0, outcome.rawValue, $1) }
     }
 
     func approved() -> Action {
-        call { ac_session_approved($0, &$1) }
+        call { ac_session_approved($0, $1) }
     }
 
     func approvalTimeout() -> Action {
-        call { ac_session_approval_timeout($0, &$1) }
+        call { ac_session_approval_timeout($0, $1) }
     }
 
     func manualDisconnect() -> Action {
-        call { ac_session_manual_disconnect($0, &$1) }
+        call { ac_session_manual_disconnect($0, $1) }
     }
 
     /// Runs one C call, decoding its action code and delay/timeout.
