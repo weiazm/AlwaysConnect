@@ -36,6 +36,17 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     /// packet pump and auth driver plug into it in Phase 0/1.
     private var ruleEngine: RustRuleEngine?
 
+    /// Session driver (Rust core). Created when a tunnel starts; the
+    /// stages below call into it. A provider restart creates a fresh
+    /// driver (Disconnected) — that is the "fresh process must
+    /// re-authenticate" path, not a resume.
+    private var sessionDriver: RustSessionDriver?
+
+    /// Create the session driver. `seed` only affects backoff jitter.
+    func configureSession(seed: UInt64) {
+        sessionDriver = RustSessionDriver(seed: seed)
+    }
+
     /// Build the rule engine from a profile + rules (called by the App
     /// via provider configuration, and by startTunnel).
     func configureEngine(profile: Profile, rules: [Rule]) {
@@ -53,26 +64,44 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     }
 
     override func startTunnel(options: [String: NSObject]?) async throws {
-        // TODO (Phase 0/1):
+        // TODO (Phase 0/1), with the session driver stages:
         // 1. Read Profile + credentials from the App Groups container
         //    (passed by the App via NETunnelProviderManager).
-        // 2. Authenticate via libopenconnect: server + Group (SecureVPN) +
-        //    username + password. If the gateway demands a fresh approval,
-        //    report .awaitingApproval and wait (the user taps SeaTalk).
-        // 3. On success: install utun settings — default route via tunnel,
+        // 2. configureSession(seed:) + sessionDriver.start(), then
+        //    authenticate via libopenconnect: server + Group (SecureVPN) +
+        //    username + password. After the gateway handshake,
+        //    sessionDriver.authenticated().
+        // 3. Map the auth result to sessionDriver.authOutcome(...):
+        //    success -> build the tunnel; needsApproval -> report
+        //    .awaitingApproval and wait (the user taps SeaTalk), then
+        //    sessionDriver.approved() on confirmation or
+        //    sessionDriver.approvalTimeout() on expiry (re-pushes);
+        //    rejected -> surface to the user, stop retrying.
+        // 4. On success: install utun settings — default route via tunnel,
         //    excludedRoutes = 192.168.0.0/16 (home LAN), tunnel DNS from
         //    the gateway, DNS proxy for rule domains.
-        // 4. Start the reconnect watchdog (keepalive timeout -> reconnect).
-        // 5. Wire the packet pump: packetFlow <-> libopenconnect tunnel,
+        // 5. On a drop: sessionDriver.drop(cookieAlive:) — in-process
+        //    cookie alive -> reconnect the data plane (routes stay);
+        //    dead -> re-authenticate from stage 2.
+        // 6. Start the reconnect watchdog (keepalive timeout -> stage 5).
+        // 7. Wire the packet pump: packetFlow <-> libopenconnect tunnel,
         //    consulting shouldUseVPN(app:domain:ip:) per connection.
         throw NEVPNError(.configurationInvalid)
     }
 
     override func stopTunnel(with reason: NEProviderStopReason) async {
         // Distinguish intentional disconnect from unexpected drops:
-        // - .userInitiated: tear down utun/routes, clear pf rules.
-        // - anything else: keep routes installed, keep retrying (fail-closed).
+        // - .userInitiated: driver.manualDisconnect(), tear down
+        //   utun/routes, clear pf rules.
+        // - anything else: keep routes installed, keep retrying
+        //   (fail-closed). The driver handle is dropped with the
+        //   process; a later restart creates a fresh driver and
+        //   re-authenticates (see the property comment above).
         // TODO (Phase 1): implement the two paths.
+        if reason == .userInitiated {
+            _ = sessionDriver?.manualDisconnect()
+        }
+        sessionDriver = nil
         ruleEngine = nil
     }
 

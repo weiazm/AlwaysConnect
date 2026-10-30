@@ -108,6 +108,198 @@ pub extern "C" fn ac_engine_free(engine: *mut Engine) {
     }
 }
 
+// ---- Session driver (core/src/session.rs) ----
+//
+// Action codes returned by every ac_session_* call:
+//   0 = NoAction, 1 = ReconnectInProcess, 2 = Reauthenticate,
+//   3 = WaitApproval, 4 = StopNeedsUser, 5 = TornDown, 6 = Ignored.
+// The delay/timeout seconds for actions 1/2/3 are written to
+// `delay_secs_out` when it is non-null, else ignored.
+// State codes (ac_session_state):
+//   0 = Disconnected, 1 = Connecting, 2 = Authenticating,
+//   3 = AwaitingApproval, 4 = Connected, 5 = Reconnecting; -1 on null.
+// AuthOutcome codes in: 0 = Success, 1 = NeedsApproval, 2 = Rejected,
+// 3 = Transient; any other code returns Ignored and leaves the driver
+// untouched. Null handles return Ignored (state: -1) and never crash.
+
+use crate::session::{AuthOutcome, DriverAction, SessionDriver};
+use crate::state_machine::SessionStatus;
+
+pub struct SessionHandle {
+    driver: Mutex<SessionDriver>,
+}
+
+fn encode_action(action: DriverAction, delay_secs_out: *mut f64) -> c_int {
+    let (code, secs) = match action {
+        DriverAction::NoAction => (0, 0.0),
+        DriverAction::ReconnectInProcess { delay } => (1, delay.as_secs_f64()),
+        DriverAction::Reauthenticate { delay } => (2, delay.as_secs_f64()),
+        DriverAction::WaitApproval { timeout } => (3, timeout.as_secs_f64()),
+        DriverAction::StopNeedsUser => (4, 0.0),
+        DriverAction::TornDown => (5, 0.0),
+        DriverAction::Ignored => (6, 0.0),
+    };
+    if !delay_secs_out.is_null() {
+        unsafe {
+            *delay_secs_out = secs;
+        }
+    }
+    code
+}
+
+fn encode_state(state: SessionStatus) -> c_int {
+    match state {
+        SessionStatus::Disconnected => 0,
+        SessionStatus::Connecting => 1,
+        SessionStatus::Authenticating => 2,
+        SessionStatus::AwaitingApproval => 3,
+        SessionStatus::Connected => 4,
+        SessionStatus::Reconnecting => 5,
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn ac_session_new(seed: u64) -> *mut SessionHandle {
+    Box::into_raw(Box::new(SessionHandle {
+        driver: Mutex::new(SessionDriver::new(seed)),
+    }))
+}
+
+#[no_mangle]
+pub extern "C" fn ac_session_free(handle: *mut SessionHandle) {
+    if !handle.is_null() {
+        unsafe {
+            drop(Box::from_raw(handle));
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn ac_session_state(handle: *mut SessionHandle) -> c_int {
+    if handle.is_null() {
+        return -1;
+    }
+    let handle = unsafe { &*handle };
+    encode_state(handle.driver.lock().unwrap().state)
+}
+
+#[no_mangle]
+pub extern "C" fn ac_session_start(
+    handle: *mut SessionHandle,
+    delay_secs_out: *mut f64,
+) -> c_int {
+    if handle.is_null() {
+        return 6;
+    }
+    let handle = unsafe { &*handle };
+    let action = handle.driver.lock().unwrap().start();
+    encode_action(action, delay_secs_out)
+}
+
+#[no_mangle]
+pub extern "C" fn ac_session_authenticated(
+    handle: *mut SessionHandle,
+    delay_secs_out: *mut f64,
+) -> c_int {
+    if handle.is_null() {
+        return 6;
+    }
+    let handle = unsafe { &*handle };
+    let action = handle.driver.lock().unwrap().on_authenticated();
+    encode_action(action, delay_secs_out)
+}
+
+#[no_mangle]
+pub extern "C" fn ac_session_drop(
+    handle: *mut SessionHandle,
+    cookie_alive: bool,
+    delay_secs_out: *mut f64,
+) -> c_int {
+    if handle.is_null() {
+        return 6;
+    }
+    let handle = unsafe { &*handle };
+    let action = handle
+        .driver
+        .lock()
+        .unwrap()
+        .on_drop(cookie_alive);
+    encode_action(action, delay_secs_out)
+}
+
+#[no_mangle]
+pub extern "C" fn ac_session_reconnected(
+    handle: *mut SessionHandle,
+    delay_secs_out: *mut f64,
+) -> c_int {
+    if handle.is_null() {
+        return 6;
+    }
+    let handle = unsafe { &*handle };
+    let action = handle.driver.lock().unwrap().on_reconnected();
+    encode_action(action, delay_secs_out)
+}
+
+#[no_mangle]
+pub extern "C" fn ac_session_auth_outcome(
+    handle: *mut SessionHandle,
+    outcome: c_int,
+    delay_secs_out: *mut f64,
+) -> c_int {
+    if handle.is_null() {
+        return 6;
+    }
+    let outcome = match outcome {
+        0 => AuthOutcome::Success,
+        1 => AuthOutcome::NeedsApproval,
+        2 => AuthOutcome::Rejected,
+        3 => AuthOutcome::Transient,
+        _ => return 6,
+    };
+    let handle = unsafe { &*handle };
+    let action = handle.driver.lock().unwrap().on_auth_outcome(outcome);
+    encode_action(action, delay_secs_out)
+}
+
+#[no_mangle]
+pub extern "C" fn ac_session_approved(
+    handle: *mut SessionHandle,
+    delay_secs_out: *mut f64,
+) -> c_int {
+    if handle.is_null() {
+        return 6;
+    }
+    let handle = unsafe { &*handle };
+    let action = handle.driver.lock().unwrap().on_approved();
+    encode_action(action, delay_secs_out)
+}
+
+#[no_mangle]
+pub extern "C" fn ac_session_approval_timeout(
+    handle: *mut SessionHandle,
+    delay_secs_out: *mut f64,
+) -> c_int {
+    if handle.is_null() {
+        return 6;
+    }
+    let handle = unsafe { &*handle };
+    let action = handle.driver.lock().unwrap().on_approval_timeout();
+    encode_action(action, delay_secs_out)
+}
+
+#[no_mangle]
+pub extern "C" fn ac_session_manual_disconnect(
+    handle: *mut SessionHandle,
+    delay_secs_out: *mut f64,
+) -> c_int {
+    if handle.is_null() {
+        return 6;
+    }
+    let handle = unsafe { &*handle };
+    let action = handle.driver.lock().unwrap().on_manual_disconnect();
+    encode_action(action, delay_secs_out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -149,5 +341,62 @@ mod tests {
         );
         assert_eq!(ac_engine_new(9), std::ptr::null_mut());
         ac_engine_free(e);
+    }
+
+    #[test]
+    fn session_abi_full_flow() {
+        let h = ac_session_new(42);
+        assert!(!h.is_null());
+        let mut delay = -1.0f64;
+        assert_eq!(ac_session_start(h, &mut delay), 0);
+        assert_eq!(ac_session_state(h), 1);
+        assert_eq!(ac_session_authenticated(h, &mut delay), 0);
+        assert_eq!(ac_session_state(h), 2);
+        assert_eq!(ac_session_auth_outcome(h, 0, &mut delay), 0);
+        assert_eq!(ac_session_state(h), 4);
+        // Drop with a live in-process cookie: reconnect in process.
+        assert_eq!(ac_session_drop(h, true, &mut delay), 1);
+        assert!(delay > 0.0 && delay < 2.0);
+        assert_eq!(ac_session_state(h), 5);
+        assert_eq!(ac_session_reconnected(h, &mut delay), 0);
+        assert_eq!(ac_session_state(h), 4);
+        // User-initiated disconnect tears down.
+        assert_eq!(ac_session_manual_disconnect(h, &mut delay), 5);
+        assert_eq!(ac_session_state(h), 0);
+        ac_session_free(h);
+    }
+
+    #[test]
+    fn session_abi_approval_and_reject() {
+        let h = ac_session_new(7);
+        let mut delay = -1.0f64;
+        ac_session_start(h, &mut delay);
+        ac_session_authenticated(h, &mut delay);
+        assert_eq!(ac_session_auth_outcome(h, 1, &mut delay), 3);
+        assert!((delay - 120.0).abs() < f64::EPSILON);
+        assert_eq!(ac_session_state(h), 3);
+        assert_eq!(ac_session_approval_timeout(h, &mut delay), 2);
+        assert_eq!(ac_session_state(h), 2);
+        assert_eq!(ac_session_auth_outcome(h, 2, &mut delay), 4);
+        assert_eq!(ac_session_state(h), 0);
+        ac_session_free(h);
+    }
+
+    #[test]
+    fn session_abi_bad_input() {
+        let null = std::ptr::null_mut();
+        let mut delay = -1.0f64;
+        assert_eq!(ac_session_state(null), -1);
+        assert_eq!(ac_session_start(null, &mut delay), 6);
+        assert_eq!(ac_session_drop(null, true, &mut delay), 6);
+        assert_eq!(ac_session_auth_outcome(null, 0, &mut delay), 6);
+        // Null out-param is fine on a legal call.
+        let h = ac_session_new(1);
+        assert_eq!(ac_session_start(h, std::ptr::null_mut()), 0);
+        // Invalid outcome code leaves the driver untouched.
+        assert_eq!(ac_session_auth_outcome(h, 9, &mut delay), 6);
+        assert_eq!(ac_session_state(h), 1);
+        ac_session_free(null);
+        ac_session_free(h);
     }
 }
