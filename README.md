@@ -35,15 +35,28 @@ App（菜单栏应用，LSUIElement）
 ```
 AlwaysConnect/
 ├── project.yml              # XcodeGen 工程定义（在 Mac 上用 xcodegen 生成 .xcodeproj）
+├── core/                    # Rust 核心（alwaysconnect-core）：规则引擎、DNS 动态路由、
+│                            # 重连状态机、退避、Swift FFI、libopenconnect 绑定
+│                            # Linux 上 cargo test 全量验证
 ├── Sources/
 │   ├── App/                 # 菜单栏应用：入口、状态栏、设置、Keychain
 │   ├── Shared/              # App 与扩展共用的数据模型
-│   ├── Tunnel/              # PacketTunnelProvider
+│   ├── Tunnel/              # PacketTunnelProvider（Swift 壳，调 Rust 核心）
 │   ├── Proxy/               # Transparent Proxy Provider
 │   └── Helper/              # 特权 Helper（pf 兜底）
-├── DESIGN.md                # 详细设计（v0.3）
+├── DESIGN.md                # 详细设计（v0.4）
 └── README.md
 ```
+
+## Rust 核心开发（Linux 可验）
+
+```bash
+cd core
+cargo test                    # 逻辑 + FFI 测试
+cargo test --features openconnect  # 含 libopenconnect 绑定冒烟测试（需 libopenconnect-dev）
+```
+
+核心模块：`rules`（分流规则引擎）、`dns_routes`（DNS 驱动的动态路由）、`backoff`（重连退避）、`state_machine`（会话状态机）、`ffi`（给 Swift 的 C ABI）、`openconnect`（libopenconnect 绑定，需 feature 开启）。
 
 ## 在 Mac 上构建（待 Phase 0）
 

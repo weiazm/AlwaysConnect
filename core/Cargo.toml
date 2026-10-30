@@ -1,0 +1,17 @@
+[package]
+name = "alwaysconnect-core"
+version = "0.1.0"
+edition = "2021"
+description = "AlwaysConnect core: split-rule engine, DNS-driven routes, reconnect state machine (portable, no Apple frameworks)"
+license = "GPL-3.0-or-later"
+
+[lib]
+name = "alwaysconnect_core"
+crate-type = ["cdylib", "rlib"]
+
+[features]
+default = []
+# Enables the libopenconnect FFI binding (needs libopenconnect-dev at build time).
+openconnect = []
+
+[dependencies]

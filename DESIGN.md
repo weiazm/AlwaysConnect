@@ -1,9 +1,9 @@
 # AlwaysConnect 详细设计
 
-版本：v0.3（2026-10-30）
+版本：v0.4（2026-10-30）
 目标：Mac VPN 客户端，替代 Cisco Secure Client（AnyConnect），个人自用。
 一句话：打开就自动连上，断线绝不漏网，分流规则自己说了算。
-本版改动：分流规则引擎改按业界成熟机制复用（不再自研）；应用规则机制纠正为透明代理（上一版的 NEAppProxyProvider 有误）；交互按 macOS 原生菜单栏应用重做；新增第五节功能取舍判断。
+本版改动：核心技术栈定为 Rust（Swift 只做 NE 壳与 UI）；分流规则引擎改按业界成熟机制复用（不再自研）；应用规则机制纠正为透明代理（上一版的 NEAppProxyProvider 有误）；交互按 macOS 原生菜单栏应用重做；新增第五节功能取舍判断。
 
 ## 一、目标与非目标
 
@@ -29,11 +29,18 @@
 │  菜单栏面板（第一界面）/ 主窗口（第二入口）/ 首次向导 / 规则编辑 │
 │  Keychain 凭据管理 / 规则配置 / 诊断打包                       │
 └──────────────┬──────────────────────────────────────────────┘
+               │ C ABI（FFI）
+               ▼
+┌─────────────────────────────────────────────────────────────┐
+│ Rust 核心（alwaysconnect-core，可移植，无 Apple 框架依赖）      │
+│  规则引擎 / DNS 动态路由 / 重连状态机 / 退避 / libopenconnect 绑定│
+│  Linux 上 cargo test 全量验证；macOS 上由 Swift 壳调用          │
+└──────────────┬──────────────────────────────────────────────┘
                │ App Groups 共享状态 + XPC（NETunnelProviderManager）
                ▼
 ┌─────────────────────────────────────────────────────────────┐
-│ PacketTunnelProvider（NetworkExtension，系统扩展进程）         │
-│  libopenconnect（AnyConnect SSL VPN 协议）                     │
+│ PacketTunnelProvider（NetworkExtension，系统扩展进程，Swift 壳） │
+│  调用 Rust 核心驱动 libopenconnect（AnyConnect SSL VPN 协议）   │
 │  认证 / 会话恢复 / 隧道数据面 / 路由安装 / 重连状态机           │
 │  DNS 代理（域名规则解析 + 动态路由，Cisco 动态分流机制）         │
 └──────────────┬──────────────────────────────────────────────┘
@@ -53,8 +60,9 @@
 ```
 
 关键设计决策：
+- 核心用 Rust，Swift 只做壳。Rust 核心不依赖任何 Apple 框架，因此同一份代码在 Linux 上 cargo test 全量验证，macOS 上由 Swift 壳经 C ABI 调用；NE 生命周期、Keychain、UI 仍是 Swift 的。
 - 隧道与重连逻辑放在 PacketTunnelProvider 里，而不是 App 里。Provider 是系统管理的常驻进程，App 退出、界面关闭都不影响隧道与重连；故障关闭也因此天然成立（Provider 活着，路由就一直在）。
-- OpenConnect 以 libopenconnect 形式链接进 Provider，不走命令行子进程。命令行子进程在系统扩展沙箱里受限多，且状态同步难。
+- OpenConnect 以 libopenconnect 形式由 Rust 核心绑定，不走命令行子进程。命令行子进程在系统扩展沙箱里受限多，且状态同步难。
 - App 只做三件事：给 Provider 递凭据与配置、把 Provider 的状态展示出来、管理分流规则。
 - 分流规则分层复用成熟机制（见第四节）：网段规则 = WireGuard AllowedIPs 式 CIDR 路由；域名规则 = Cisco 动态分流 + Cloudflare WARP 分流隧道；应用规则 = 透明代理（IVPN / PIA / GlobalProtect 同款）。
 
@@ -219,7 +227,7 @@
 
 ## 十一、开发排期（估计，非承诺）
 
-- Phase 0 原型验证（1–2 周）：① libopenconnect 在 PacketTunnelProvider 内跑通一次完整连接（手动账号密码 + SeaTalk 批准），验证会话恢复与路由安装；② 透明代理与包隧道共存验证（应用规则流量能否按排除制出站、逆向模式能否实现）；③ DNS 代理 + 动态路由验证（域名规则生效、TTL 刷新、CDN 共用 IP 冲突）。任一受阻则改走兜底方案（见第十二节）。
+- Phase 0 原型验证（1–2 周）：① libopenconnect 在 PacketTunnelProvider 内跑通一次完整连接（手动账号密码 + SeaTalk 批准），验证会话恢复与路由安装；② 透明代理与包隧道共存验证（应用规则流量能否按排除制出站、逆向模式能否实现）；③ DNS 代理 + 动态路由验证（域名规则生效、TTL 刷新、CDN 共用 IP 冲突）；④ macOS 下隧道数据面接法二选一：NE 包泵（packetFlow ↔ libopenconnect 对接）或特权 Helper 直接跑 openconnect CLI（Tunnelblick 式）。任一受阻则改走兜底方案（见第十二节）。
 - Phase 1 MVP（3–4 周）：App + Provider + Keychain 自动登录 + 连接/断开 + 192.168 分流 + 网段规则 + 无限重连 + 故障关闭主防线（路由不撤）。
 - Phase 2 加固（2–3 周）：pf 兜底 Helper、菜单栏、统计、通知、等批准态 UI、诊断打包、应用规则、域名规则、规则测试器、泄漏自检、规则模板、通知聚合。
 - Phase 3 完善（2 周）：偏好设置完整、放行表编辑、开机自启、多服务器/多账号、日志脱敏、公证分发。
