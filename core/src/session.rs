@@ -1,26 +1,24 @@
 //! Session driver (DESIGN.md §6): what to do after a drop, and what to do
 //! when re-authentication needs the user.
 //!
-//! Verified ground this module stands on (checked 2026-10-30):
-//! - libopenconnect's public C API documents obtain_cookie -> get_cookie ->
-//!   make_cstp_connection. No cookie-injection setter appears in the public
-//!   API reference (openconnect.h 35-181, via the DeepWiki C API reference,
-//!   and two web searches for a `set_cookie` symbol found only the CLI's
-//!   `--cookie` / `--cookie-on-stdin` options).
-//! - PENDING VERIFICATION: a grep of the local 9.12 header, which is still
-//!   unavailable (apt reinstall in progress after a VM replacement). Until
-//!   that grep lands, this module calls NO cookie-restore FFI symbol, and
-//!   the absence above must not be read as proof the setter doesn't exist.
-//! - Consequence for the driver as written: a live vpninfo keeps its cookie
-//!   in memory, so a quick drop recovers in-process (mainloop reconnect)
-//!   with no re-auth and no approval. A fresh process cannot resume from a
-//!   saved cookie through the library path — it must re-authenticate, and
-//!   if the gateway wants a fresh approval, the driver waits in
-//!   AwaitingApproval. (The CLI path via the privileged Helper CAN reuse a
-//!   saved cookie with --cookie-on-stdin; that is why DESIGN keeps the
-//!   Helper route.)
-//! - The driver never guesses cookie expiry: validity is proven only by the
-//!   server's response to a reconnect attempt, never by a timer.
+//! Verified ground this module stands on (corrected 2026-10-30):
+//! - CORRECTION: an earlier version of these docs claimed the public C API
+//!   had no cookie-injection setter, based on a secondary API summary that
+//!   omitted it. That was wrong. The local 9.12 header itself declares it
+//!   (`/usr/include/openconnect.h:669`):
+//!   `int openconnect_set_cookie(struct openconnect_info *, const char *);`
+//!   plus `openconnect_clear_cookie()` (:670). The header is authoritative;
+//!   the summary was not. The binding lives in `openconnect.rs`
+//!   (`VpnSession::set_cookie` / `clear_cookie`).
+//! - Consequence, corrected: a fresh process CAN resume from a saved
+//!   cookie through the library path (set_cookie, then connect) — the
+//!   saved `SessionRecord` is usable by both the library route and the
+//!   CLI/Helper route (--cookie-on-stdin). In-process recovery (live
+//!   vpninfo, mainloop reconnect) is still the fastest path for a quick
+//!   drop; a rejected or expired cookie falls back to full
+//!   re-authentication, with approval wait when the gateway demands it.
+//! - The driver never guesses cookie expiry: validity is proven only by
+//!   the server's response to a reconnect attempt, never by a timer.
 //!
 //! State machine extensions (added here, tested below): the original
 //! machine had no terminal path for a rejected authentication and no
@@ -45,8 +43,9 @@ pub const APPROVAL_TIMEOUT: Duration = Duration::from_secs(120);
 /// defines the record and the gateway-match rule; the file format and the
 /// storage belong to the platform (Swift: Codable + Keychain — a cookie is
 /// a session credential and must never sit in a plaintext file).
-/// Today this record is directly usable only by the CLI/Helper route
-/// (--cookie-on-stdin, --servercert); see the module docs.
+/// The record is usable by both resume routes: the library route
+/// (`VpnSession::set_cookie`, then connect) and the CLI/Helper route
+/// (--cookie-on-stdin, --servercert).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionRecord {
     pub cookie: String,

@@ -92,6 +92,8 @@ extern "C" {
     fn openconnect_obtain_cookie(vpninfo: *mut VpnInfo) -> c_int;
     fn openconnect_set_option_value(opt: *mut OcFormOpt, value: *const c_char) -> c_int;
     fn openconnect_get_cookie(vpninfo: *mut VpnInfo) -> *const c_char;
+    fn openconnect_set_cookie(vpninfo: *mut VpnInfo, cookie: *const c_char) -> c_int;
+    fn openconnect_clear_cookie(vpninfo: *mut VpnInfo);
     fn openconnect_set_cafile(vpninfo: *mut VpnInfo, path: *const c_char) -> c_int;
 }
 
@@ -318,6 +320,37 @@ impl VpnSession {
             _ => Err(AuthError::NoCookie),
         }
     }
+
+    /// Read back the session cookie currently held by the library, if
+    /// any. The string is copied out immediately; the library-owned
+    /// pointer must not be kept. An empty cookie counts as absent
+    /// (clear_cookie leaves an empty string, not NULL).
+    pub fn cookie(&self) -> Option<String> {
+        let cookie = unsafe { openconnect_get_cookie(self.raw) };
+        unsafe { opt_str(cookie) }
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_owned())
+    }
+
+    /// Inject a previously saved cookie into this session, so a fresh
+    /// process can resume without re-authenticating (verified against
+    /// the 9.12 header: openconnect_set_cookie, openconnect.h:669).
+    /// Returns the library's status code on failure. Whether the server
+    /// still accepts the cookie is only proven by the connect attempt.
+    pub fn set_cookie(&mut self, cookie: &str) -> Result<(), c_int> {
+        let c = CString::new(cookie).map_err(|_| -1)?;
+        let ret = unsafe { openconnect_set_cookie(self.raw, c.as_ptr()) };
+        if ret == 0 {
+            Ok(())
+        } else {
+            Err(ret)
+        }
+    }
+
+    /// Drop the held cookie, if any.
+    pub fn clear_cookie(&mut self) {
+        unsafe { openconnect_clear_cookie(self.raw) }
+    }
 }
 
 impl Drop for VpnSession {
@@ -351,6 +384,21 @@ mod tests {
         drop(session);
         // Second session proves free() did not corrupt library state.
         assert!(VpnSession::new("AlwaysConnect/0.1.0").is_some());
+    }
+
+    #[test]
+    fn cookie_set_get_clear_round_trip() {
+        // No gateway needed: parse_url only parses, and set/get/clear
+        // operate on the session's held cookie string.
+        let mut s = VpnSession::new("AlwaysConnect/0.1.0").expect("session");
+        let url = CString::new("https://127.0.0.1:4443").unwrap();
+        let ret = unsafe { openconnect_parse_url(s.raw, url.as_ptr()) };
+        assert_eq!(ret, 0, "parse_url must succeed");
+        assert_eq!(s.cookie(), None, "no cookie before set");
+        s.set_cookie("test-cookie-value").expect("set_cookie");
+        assert_eq!(s.cookie().as_deref(), Some("test-cookie-value"));
+        s.clear_cookie();
+        assert_eq!(s.cookie(), None, "no cookie after clear");
     }
 
     #[test]

@@ -150,7 +150,7 @@
 - 会话恢复：断线重连优先用原会话恢复（网关会话保持窗口内免 2FA），这是用户实测确认的行为。
 - 等批准态：网关要求重新批准时，Provider 上报 awaiting-approval 状态，App 通知 + 菜单栏变黄并持续等待；网关超时关闭尝试后，Provider 自动再发起一次（会再推一条批准消息），直到连上或用户手动断开。
 - 实现：Rust 核 `core/src/session.rs`（SessionDriver + SessionRecord + AuthOutcome + DriverAction），决策逻辑与退避、状态机复用；认证结果到 AuthOutcome 的映射在 FFI 边界做（Phase 1）。
-- 会话恢复的边界（2026-10-30 核查，待本地 9.12 头文件 grep 最终确认）：libopenconnect 公开 C API 文档里只有 obtain_cookie → get_cookie → make_cstp_connection，未见向新 vpninfo 注入已存 Cookie 的公开函数；因此进程内存活的 vpninfo 掉线后靠 mainloop 原地重连（免 2FA 的会话保持走这条路），新进程走库路径必须重新认证（可能需批准）。跨进程复用已存 Cookie 只有 CLI 路径可行（--cookie-on-stdin），这是保留特权 Helper 路线的又一个理由。驱动不猜 Cookie 过期：有效性只由服务器对重连尝试的响应证明，不用计时器。
+- 会话恢复的边界（2026-10-30 更正：此前“库路径无 Cookie 注入公开函数”的说法是错的，错在信了二手 API 总结；本地 9.12 头文件原文为准）：`openconnect_set_cookie()` 存在（openconnect.h:669，另有 clear_cookie :670），因此新进程走库路径也能用已存 Cookie 恢复（set_cookie 后建连接），SessionRecord 两条路线都能用。进程内存活的 vpninfo 掉线后靠 mainloop 原地重连仍是最快路径；Cookie 被拒或过期则回落完整认证（可能需批准）。驱动不猜 Cookie 过期：有效性只由服务器对重连尝试的响应证明，不用计时器。
 - 状态机扩展：原机没有\"认证被拒\"的终态路径和连接中/认证中的手动断开路径，驱动需要，`state_machine` 增加 AuthRejected（认证中 → 已断开）与 ManualDisconnect（连接中/认证中 → 已断开）。
 
 ### 3. 隧道层（Provider + libopenconnect）
