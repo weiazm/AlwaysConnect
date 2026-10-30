@@ -1,0 +1,29 @@
+# Xcode
+*.xcodeproj/
+xcuserdata/
+DerivedData/
+*.xcworkspace/
+*.xcuserstate
+*.moved-aside
+
+# Build outputs
+build/
+*.app
+*.dSYM.zip
+*.ipa
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Swift Package Manager
+.build/
+.swiftpm/
+
+# XcodeGen
+# (project.yml is kept; generated .xcodeproj is ignored above)
+
+# Secrets / local config — never commit
+*.entitlements.local
+LocalConfig.xcconfig

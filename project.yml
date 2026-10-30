@@ -1,0 +1,51 @@
+# XcodeGen project definition for AlwaysConnect.
+# Generate on macOS with: xcodegen generate
+name: AlwaysConnect
+options:
+  deploymentTarget:
+    macOS: "13.0"
+  createIntermediateGroups: true
+targets:
+  AlwaysConnect:
+    type: application
+    platform: macOS
+    sources:
+      - Sources/App
+      - Sources/Shared
+    settings:
+      PRODUCT_BUNDLE_IDENTIFIER: com.alwaysconnect.app
+      INFOPLIST_KEY_LSUIElement: true
+      INFOPLIST_KEY_CFBundleDisplayName: AlwaysConnect
+    entitlements:
+      path: Sources/App/AlwaysConnect.entitlements
+    dependencies:
+      - target: AlwaysConnectTunnel
+      - target: AlwaysConnectProxy
+  AlwaysConnectTunnel:
+    type: app-extension
+    platform: macOS
+    sources:
+      - Sources/Tunnel
+      - Sources/Shared
+    settings:
+      PRODUCT_BUNDLE_IDENTIFIER: com.alwaysconnect.app.tunnel
+    entitlements:
+      path: Sources/Tunnel/AlwaysConnectTunnel.entitlements
+  AlwaysConnectProxy:
+    type: app-extension
+    platform: macOS
+    sources:
+      - Sources/Proxy
+      - Sources/Shared
+    settings:
+      PRODUCT_BUNDLE_IDENTIFIER: com.alwaysconnect.app.proxy
+    entitlements:
+      path: Sources/Proxy/AlwaysConnectProxy.entitlements
+  AlwaysConnectHelper:
+    type: tool
+    platform: macOS
+    sources:
+      - Sources/Helper
+      - Sources/Shared
+    settings:
+      PRODUCT_BUNDLE_IDENTIFIER: com.alwaysconnect.app.helper
