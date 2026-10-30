@@ -51,23 +51,27 @@ final class TransparentProxyProvider: NETransparentProxyProvider {
         return !engine.shouldUseVPN(app: app, domain: domain, ip: ip)
     }
 
-    /// Extract the decision inputs from a flow. App identity comes from
-    /// the flow's signing identifier; the destination hostname from the
-    /// flow; the IP from the TCP endpoint when it is a literal address
-    /// (a hostname endpoint leaves ip empty — the engine then decides
-    /// on app/domain/default, which is safe). UDP flows contribute app
-    /// + hostname only for now.
+    /// Extract the decision inputs from a flow. App identity comes
+    /// from the flow metadata's signing identifier (flow.metaData,
+    /// NOT a direct property of the flow — the compiler rejects
+    /// flow.sourceAppSigningIdentifier); the destination hostname from
+    /// the flow; the IP from the TCP endpoint's hostname when it is an
+    /// IP literal (a DNS name leaves ip empty — the engine then decides
+    /// on app/domain/default, which is safe; a hostname can never match
+    /// a CIDR or the LAN check anyway). UDP flows contribute app +
+    /// hostname only for now.
     private func extract(_ flow: NEAppProxyFlow) -> (app: String, domain: String, ip: String) {
-        let app = flow.sourceAppSigningIdentifier ?? ""
+        let app = flow.metaData?.sourceAppSigningIdentifier ?? ""
         let domain = flow.remoteHostname ?? ""
         var ip = ""
         if let tcp = flow as? NEAppProxyTCPFlow,
-           case .hostPort(let host, _) = tcp.remoteEndpoint {
-            switch host {
-            case .ipv4(let addr): ip = "\(addr)"
-            case .ipv6(let addr): ip = "\(addr)"
-            case .name: break
-            @unknown default: break
+           let hostEndpoint = tcp.remoteEndpoint as? NWHostEndpoint {
+            let host = hostEndpoint.hostname
+            let looksLikeIP = !host.isEmpty
+                && host.allSatisfy({ $0.isHexDigit || $0 == "." || $0 == ":" })
+                && (host.contains(".") || host.contains(":"))
+            if looksLikeIP {
+                ip = host
             }
         }
         return (app, domain, ip)

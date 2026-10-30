@@ -107,7 +107,7 @@
   - 子进程继承：被排除应用拉起的子进程同样被排除，但经 Finder、登录项或 open 命令拉起的不算。
   - 逆向模式在 macOS 上不成熟：IVPN 明确说明"仅选定应用走 VPN、其余直连"的逆向模式在 macOS 上暂不可用（Windows/Linux 有）。影响：我们的分流模式下，应用级"纳入 VPN"规则能否实现需 Phase 0 验证；若不可行，分流模式的应用规则降级为"排除制 + 提示"，不硬上。
   - Safari 排除受限：多数厂商无法把 Safari 排除出隧道（系统限制），PIA 需用特殊的 WebKit 规则且连带影响 Mail 与地图。我们的应用规则对 Safari 做同样提示，不承诺。
-- 接线进展：Proxy 已链接 Rust staticlib（Bridge 目录复用 Tunnel 的 RustCore.swift），handleNewFlow 已能按 sourceAppSigningIdentifier + remoteHostname + TCP 端点 IP 做直接放行判定（directEgress，引擎未配置时一律走 VPN）；数据泵（NWConnection 转发）仍是 Phase 2，在此之前直接命中的流也先走 VPN（安全方向，不漏网）。
+- 接线进展：Proxy 已链接 Rust staticlib（Bridge 目录复用 Tunnel 的 RustCore.swift），handleNewFlow 已能按 metaData.sourceAppSigningIdentifier + remoteHostname + TCP 端点主机名做直接放行判定（directEgress，引擎未配置时一律走 VPN）；数据泵（NWConnection 转发）仍是 Phase 2，在此之前直接命中的流也先走 VPN（安全方向，不漏网）。
 
 ### 4.4 分离 DNS：Tailscale Split DNS
 - 机制：按域名选解析器。Tailscale 的 Split DNS 把特定域名的解析指到特定 DNS 服务器，其余走正常 DNS。
