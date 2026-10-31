@@ -22,6 +22,10 @@ import Foundation
 ///                     run-once reads the password from stdin purely
 ///                     so the engine can be exercised without the App.
 ///                     Never use run-once as the product login path.
+///   dump-script      Print the vpnc-script text (VpncScript.text)
+///                     exactly as the engine installs it, so CI can
+///                     exercise the script's branches on the real
+///                     bytes instead of a re-parsed copy.
 @main
 struct HelperMain {
     static func main() {
@@ -38,10 +42,21 @@ struct HelperMain {
             runOnce(args: args)
         case "daemon":
             daemon()
+        case "dump-script":
+            dumpScript()
         default:
             usage()
             exit(2)
         }
+    }
+
+    // MARK: - dump-script
+
+    /// Print the vpnc-script exactly as installed (no added newline:
+    /// the text already ends with one). CI runs the printed script's
+    /// branches against the flag-path contract (DESIGN.md §16.4).
+    static func dumpScript() {
+        print(VpncScript.text, terminator: "")
     }
 
     // MARK: - daemon
@@ -268,5 +283,6 @@ struct HelperMain {
         fputs("  AlwaysConnectHelper generate-pf --phys <if> --tun <if> --gateway <ip[,ip...]> [--allow <cidr[,cidr...]>] [--connected]\n", stderr)
         fputs("  AlwaysConnectHelper run-once --server <url> --user <name> [--group <group>] [--phys <if>] [--allow <cidr,...>] [--cookie-store <path>] [--support-dir <path>] [--openconnect <path>] [--cafile <path>] [--script <path>] [--max-attempts <n>] [--no-routes]\n", stderr)
         fputs("  AlwaysConnectHelper daemon\n", stderr)
+        fputs("  AlwaysConnectHelper dump-script\n", stderr)
     }
 }

@@ -158,6 +158,36 @@ jobs:
             echo "expected failure without --gateway" >&2
             exit 1
           fi
+      - name: Test vpnc-script branches (manual flag path)
+        # The flag-path contract (DESIGN.md §16.4): disconnect
+        # restores the local network ONLY when the engine's flag file
+        # exists at the spawn-time path; otherwise it holds routes
+        # and pf (fail closed). dump-script prints the exact bytes
+        # the engine installs, so this exercises the real script,
+        # not a re-parsed copy. NO_ROUTES skips the Mac-only
+        # route/scutil commands; the AC_HOOK lines on stdout are
+        # the observable contract.
+        run: |
+          HELPER=$(find ~/Library/Developer/Xcode/DerivedData/AlwaysConnect-*/Build/Products/Debug -maxdepth 1 -name AlwaysConnectHelper -type f | head -1)
+          test -n "$HELPER"
+          SCRIPT=/tmp/ac-vpnc-script.sh
+          "$HELPER" dump-script > "$SCRIPT"
+          chmod +x "$SCRIPT"
+          head -1 "$SCRIPT" | grep -q '#!/bin/sh'
+          export TUNDEV=utun9 VPNGATEWAY=10.0.0.1 ALWAYSCONNECT_NO_ROUTES=1
+          OUT=$(env -u ALWAYSCONNECT_MANUAL_FLAG_PATH "$SCRIPT" disconnect)
+          echo "$OUT" | grep -q 'AC_HOOK disconnect-held'
+          OUT=$(ALWAYSCONNECT_MANUAL_FLAG_PATH=/tmp/ac-manual-flag-missing "$SCRIPT" disconnect)
+          echo "$OUT" | grep -q 'AC_HOOK disconnect-held'
+          touch /tmp/ac-manual-flag-present
+          OUT=$(ALWAYSCONNECT_MANUAL_FLAG_PATH=/tmp/ac-manual-flag-present "$SCRIPT" disconnect)
+          echo "$OUT" | grep -q 'AC_HOOK disconnect-manual'
+          rm -f /tmp/ac-manual-flag-present
+          OUT=$("$SCRIPT" connect)
+          echo "$OUT" | grep -q 'AC_HOOK connect tun=utun9 gateway=10.0.0.1'
+          "$SCRIPT" pre-init
+          "$SCRIPT" attempt-reconnect
+          "$SCRIPT" bogus-reason
       - name: Run PumpTest harness (relay + interface select + bind)
         # PumpTest is built by the main scheme (see project.yml), so
         # it lands in DerivedData like the Helper. Run it with the

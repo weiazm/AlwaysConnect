@@ -375,10 +375,10 @@ CLI 进程不向调用方返回 Cookie；2026-10-31 实测证明，openconnect �
 Helper 自带自定义 vpnc-script（sh），openconnect 以 `$reason` 区分调用点：
 
 - `connect`：按 Helper 写入的配置设路由与 DNS；成功后向 stdout 写钩子行 `AC_HOOK connect tun=<if> gateway=<ip>`，Helper 据此把状态推为 Connected 并装载 pf。路由/DNS 命令失败时脚本以非零退出且不发钩子，引擎永不把"路由没立起来"报成已连接。
-- `disconnect`：一律只记日志，不拆路由、不清 pf；唯一的例外是 Helper 在手动断开前先落一个标志文件，脚本见标志才执行恢复路径。意外掉线时路由与 pf 原地保留，openconnect 自身重连 + Helper 退避双保险。
+- `disconnect`：一律只记日志，不拆路由、不清 pf；唯一的例外是 Helper 在手动断开前先落一个标志文件，脚本见标志才执行恢复路径。标志的传递方式必须是文件路径而非环境变量值：子进程环境在拉起时冻结，停机时再设值永远到不了脚本——2026-10-31 发现的 Phase 1 遗留 bug 正是这处错位（引擎落标志文件，脚本却查一个拉起时已被显式删掉的环境变量，手动断开永远走 held 分支、脚本的路由/DNS 恢复分支永不执行）。修法（2026-10-31）：拉起时引擎把标志文件路径以 `ALWAYSCONNECT_MANUAL_FLAG_PATH` 传给子进程，`stop()` 在终止子进程前先落文件，脚本判文件存在才走恢复；`finishManualStop` 删文件，拉起时先清上一次崩溃残留的旧文件，防止意外掉线误读旧标志而放行。意外掉线时路由与 pf 原地保留，openconnect 自身重连 + Helper 退避双保险。
 - 脚本与 openconnect 共享 stdout/stderr：钩子行与 `--dump-http-traffic` 输出走同一流，Helper 按行解析；钩子行格式固定为 `AC_HOOK <事件>`，事件名只增不改名。
 
-脚本分支逻辑已在 Linux 上验过（取 Swift 内嵌文本、按 Swift 多行字符串缩进规则还原后逐分支执行）：disconnect 无标志 → `disconnect-held` 且不跑路由命令；disconnect 有手动标志 → `disconnect-manual`；connect（NO_ROUTES 测试模式）→ `connect tun=… gateway=…`；attempt-reconnect / pre-init / 未知 reason → exit 0。Mac 专属的 `route`/`scutil` 命令本身未在 Mac 上跑过，仍是 Mac proof 待验证项。
+脚本分支逻辑已在 Linux 上验过（取 Swift 内嵌文本、按 Swift 多行字符串缩进规则还原后逐分支执行）：disconnect 无标志 → `disconnect-held` 且不跑路由命令；disconnect 有手动标志 → `disconnect-manual`；connect（NO_ROUTES 测试模式）→ `connect tun=… gateway=…`；attempt-reconnect / pre-init / 未知 reason → exit 0。注意旧版验证设的是环境变量值，修法后验证口径改为标志路径 + 文件存在与否，并已固化为 CI 的 vpnc-script 分支步骤：Helper 的 `dump-script` 子命令输出引擎实际安装的原文，步骤对 disconnect 的无路径/路径无文件/文件存在三种状态、connect 测试模式、其余 reason 逐一断言。Mac 专属的 `route`/`scutil` 命令本身未在 Mac 上跑过，仍是 Mac proof 待验证项。
 
 ### 16.5 等批准态启发式（待验证项，不承诺精确文案）
 
