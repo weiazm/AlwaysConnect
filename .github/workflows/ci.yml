@@ -136,6 +136,9 @@ jobs:
           grep -q "credential password" /tmp/ac-engine-test/out.txt
           grep -q "credential cookie" /tmp/ac-engine-test/out.txt
           grep -q "TERMINAL attempts-exhausted" /tmp/ac-engine-test/out.txt
+          echo "--- cookie store (test fixture value, safe to print) ---"
+          ls -la /tmp/ac-engine-test/
+          cat /tmp/ac-engine-test/session.json || echo "session.json missing"
           grep -q mockcookie123 /tmp/ac-engine-test/session.json
       - name: Run Helper (pf anchor smoke check)
         # The scheme also builds AlwaysConnectHelper (a plain tool, no

@@ -68,8 +68,15 @@ BODY_DONE = """<?xml version="1.0" encoding="UTF-8"?>
 
 class Handler(http.server.BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
-    auth_count = 0
-    lock = threading.Lock()
+
+    def __init__(self, *args, **kwargs):
+        # Auth state is PER CONNECTION (each engine attempt opens a
+        # new TLS connection): first /auth -> password form, later
+        # /auth on the same connection -> complete. A global counter
+        # (the first version's bug) corrupts later attempts: attempt 3
+        # would get "complete" after only the username step.
+        self.auth_count = 0
+        super().__init__(*args, **kwargs)
 
     def log_message(self, *args):  # keep stdout clean for the test
         sys.stderr.write("MOCK %s %s\n" % (self.command, self.path))
@@ -98,10 +105,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 "path=/; Secure; HttpOnly",
             ])
         elif self.path == "/auth":
-            with self.lock:
-                Handler.auth_count += 1
-                n = Handler.auth_count
-            if n == 1:
+            self.auth_count += 1
+            if self.auth_count == 1:
                 self._send_xml(BODY_PASS, [
                     "webvpncontext=%s; Max-Age=120; Secure; HttpOnly"
                     % MOCK_CONTEXT,
