@@ -18,7 +18,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install system deps
-        run: sudo apt-get update && sudo apt-get install -y libopenconnect-dev ocserv
+        run: sudo apt-get update && sudo apt-get install -y libopenconnect-dev ocserv openconnect
       - name: Start test gateway
         # ocserv refuses to run without root ("This server requires root
         # access to operate"); Actions runners have passwordless sudo.
@@ -31,6 +31,15 @@ jobs:
           AC_TEST_USER: testuser
           AC_TEST_PASS: testpass
         run: cargo test --features openconnect
+      - name: CLI behavior contract (wrong password / bogus cookie)
+        # Tun-independent only: the correct-password case needs a tun
+        # device, which this sandbox may deny (see DESIGN.md §16.3.1).
+        # Runs as root because the gateway's CA file is root-owned.
+        env:
+          AC_TEST_URL: https://127.0.0.1:4443
+          AC_TEST_CA: /tmp/ocserv-test/ca-cert.pem
+          AC_TEST_USER: testuser
+        run: sudo -E core/scripts/cli-behavior-test.sh
       - name: Stop test gateway
         if: always()
         run: sudo core/scripts/ocserv-test.sh stop
