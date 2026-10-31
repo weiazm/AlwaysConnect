@@ -136,7 +136,6 @@ jobs:
           cat /tmp/ac-mock/mock.log
           echo "--- run-once output ---"
           cat /tmp/ac-engine-test/out.txt
-          RUN_EXIT=$(cat /tmp/ac-engine-test/exit.txt 2>/dev/null || echo "timeout")
           echo "RUN_EXIT=$RUN_EXIT"
           test "$RUN_EXIT" = "3"
           grep -q "credential password" /tmp/ac-engine-test/out.txt
