@@ -476,6 +476,7 @@ Helper 的 physicalIf（默认 en0）与 provider 的发现结果在单物理口
 - 半关闭：一方 EOF → 关另一方写侧，另一方向继续排空直至自身 EOF；任一侧写错 → 双向关闭；两方向都终结 → onDone 回调，provider 释放泵。
 - NE 适配：TCP 用 open/readData/writeData/closeReadWithError/closeWriteWithError；UDP 按远端端点分 socket（一个 flow 内多远端各一个绑定 socket），datagram 中继，120 秒空闲关闭。
 - fd 适配（DispatchIO + shutdown 语义：closeWrite = shutdown(SHUT_WR) 而非关 fd，保证另一方向能排空）供 PumpTest harness 用同一中继核，不另写一套。
+- fd 端点 teardown 实证（CI 四轮 SIGTRAP 定位）：DispatchSource 被 cancel 后若仍处于 suspended 态、未 resume 就释放，会在释放时以静默 SIGTRAP（exit 133，无运行时报错）死掉，且死点随队列时序在不同检查间移动。修法：close() 块里 cancel 后，对所有仍 suspended 的 source 调 resume（以标志位为准，只 resume 确实 suspended 的），让 cancel 完成后再关 fd、再释放。PumpTest 的 ALWAYSCONNECT_PUMP_TRACE=1 追踪（同步 stderr 写）是定位它的手段，CI 默认开启。
 
 ### 17.5 pf 两态协同：泵生效的前提
 
