@@ -63,3 +63,4 @@ schemes:
       targets:
         AlwaysConnect: all
         AlwaysConnectHelper: all
+        AlwaysConnectPumpTest: all

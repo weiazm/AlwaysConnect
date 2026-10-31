@@ -159,12 +159,12 @@ jobs:
             exit 1
           fi
       - name: Run PumpTest harness (relay + interface select + bind)
-        # Builds the PumpTest tool target explicitly (it is not in the
-        # App scheme) and runs it: relay bytes/half-close/error
-        # teardown over real socketpairs, interface selection on
-        # canned lists, and a real IP_BOUND_IF setsockopt.
+        # PumpTest is built by the main scheme (see project.yml), so
+        # it lands in DerivedData like the Helper. Run it: relay
+        # bytes/half-close/error teardown over real socketpairs,
+        # interface selection on canned lists, and a real
+        # IP_BOUND_IF setsockopt.
         run: |
-          xcodebuild -project AlwaysConnect.xcodeproj -target AlwaysConnectPumpTest -destination 'platform=macOS' build CODE_SIGNING_ALLOWED=NO
           PUMPTEST=$(find ~/Library/Developer/Xcode/DerivedData/AlwaysConnect-*/Build/Products/Debug -maxdepth 1 -name AlwaysConnectPumpTest -type f | head -1)
           test -n "$PUMPTEST"
           "$PUMPTEST"
