@@ -19,25 +19,7 @@ targets:
     entitlements:
       path: Sources/App/AlwaysConnect.entitlements
     dependencies:
-      - target: AlwaysConnectTunnel
       - target: AlwaysConnectProxy
-  AlwaysConnectTunnel:
-    type: app-extension
-    platform: macOS
-    sources:
-      - Sources/Tunnel
-      - Sources/Bridge
-      - Sources/Shared
-    settings:
-      PRODUCT_BUNDLE_IDENTIFIER: com.alwaysconnect.app.tunnel
-      # Links the Rust core staticlib (CI builds it first:
-      # cargo build --release in core/). Required because RustCore.swift
-      # calls the ac_engine_* C ABI symbols.
-      OTHER_LDFLAGS: $(PROJECT_DIR)/core/target/release/libalwaysconnect_core.a
-    info:
-      path: Sources/Tunnel/Info.plist
-    entitlements:
-      path: Sources/Tunnel/AlwaysConnectTunnel.entitlements
   AlwaysConnectProxy:
     type: app-extension
     platform: macOS

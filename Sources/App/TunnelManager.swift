@@ -1,6 +1,12 @@
 import Foundation
 import NetworkExtension
 
+/// SUPERSEDED by the v0.5 fork decision (DESIGN.md §十五, 2026-10-31):
+/// the tunnel is no longer a PacketTunnelProvider, so this manager talks
+/// to a provider that is not built anymore. It still compiles and its
+/// failure path stays visible via lastError, but Phase 1 replaces it
+/// with HelperClient (XPC to the privileged Helper) — do not extend it.
+///
 /// Owns the NETunnelProviderManager for the AlwaysConnect tunnel.
 /// Credentials reach the provider via providerConfiguration (the system
 /// stores VPN configurations protected); the App's Keychain copy is the

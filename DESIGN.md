@@ -272,3 +272,33 @@
 - Cisco 对齐：Posture 合规、Umbrella 式 DNS 防护、AMP 联动、Web Security。
 - 通用附加：分流可视化编辑器、连接质量看板、断网保护可视化、DNS 泄漏检测、Shortcuts、多账号快速切换、配置加密分享。
 - 高级规则：按端口分流（如仅 443 走 VPN）、按时间段分流（如工作时间自动切安全模式）。
+
+## 十五、Phase 0 分叉决议（v0.5，2026-10-31，用户授权助手定）
+
+### 决议：走特权 Helper + openconnect CLI 路线，放弃 NE 包泵路线
+
+新架构：App（菜单栏）+ Helper（LaunchDaemon，root：跑 openconnect CLI、管 pf、管路由与 DNS）+ Proxy（透明代理，只做应用规则）+ pf 兜底。PacketTunnelProvider 目标移出构建，不再承担隧道；其源码保留在 Sources/Tunnel（不编译）作参考，CLI 路线跑通后删除。
+
+### 定性理由（按权重排序）
+
+1. **最少未验证机制**：CLI 路线复用久经实战的 openconnect 二进制——认证、CSTP、DTLS、重连、MTU、DPD 全是现成的。NE 包泵路线要把 packetFlow 的包喂给 libopenconnect，依赖的喂包机制（socketpair + tun fd 注入或等效 API）未经本项目验证，NE 沙箱对库的网络、文件、Keychain 访问也未经验证。没 Mac 的情况下，每多一个未验证机制，风险就翻一倍。
+2. **没 Mac 也能验得更多**：CLI + ocserv 在 Linux 上就能跑通编排逻辑（拉起、传参、Cookie 恢复、退出码、脚本钩子），只剩 tun 与路由表被沙箱挡住；NE 包泵离开 NE 运行时一步都验不了。
+3. **Helper 本来就要有**：pf 兜底无论如何都需要一个特权 Helper，CLI 路线不新增特权组件，只给已有组件加活。一次管理员授权装 Helper，同时解决 pf 与隧道。
+4. **Tunnelblick 同款，有维护先例**：同一模型在 macOS 大版本间有人持续维护，不是孤例。
+5. **沉没成本可控**：被放弃的只是 Tunnel 目标的接线代码（Provider 壳 + 会话驱动适配），Rust 核的规则、会话驱动、pf、认证映射全部复用；Proxy 不受影响。
+
+### 付出的代价（明说，不藏）
+
+- App 与隧道的关系从 NETunnelProviderManager 改为 XPC：App 读 Keychain，启动时经 XPC 把凭据发给 Helper（Helper 只放内存，不落盘）；Helper 用 --passwd-on-stdin（新认证）或 --cookie-on-stdin（会话恢复）起 openconnect，--authgroup 传 Group。
+- 失败关闭的第一道改由自定义 vpnc-script 承担：脚本的断开路径一律不拆路由、不清 pf（只记日志），只在 Helper 确认"用户手动断开"后才由 Helper 显式恢复本地网络；意外掉线时路由与 pf 原地保留，openconnect 自身重连 + Helper 的退避双保险。
+- 等批准态的感知从"库回调通知"变为"CLI 输出启发式"：Helper 从 openconnect 的 --verbose 输出里识别 push 等待标记，真实网关的实际输出形状是 Phase 1 待验证项，验出来之前不承诺精确的等批准文案。
+- 分发仍需付费开发者账号（Proxy 的 NE entitlement + Helper 的 SMAppService + 公证），包隧道 entitlement 省掉了，但 binding 约束没变。
+- openconnect 是 GPL：个人自用无碍，对外分发需处理源码义务。
+
+### 随决议的改动清单（Phase 1 重做项）
+
+- project.yml：Tunnel 目标移出构建，App 目标去掉对 Tunnel 的依赖；Proxy、Helper 不变。
+- App 侧：TunnelManager（NETunnelProviderManager）替换为 HelperClient（XPC：启动、停止、状态订阅、lastError）；面板状态源从 NEVPNStatus 改为 Helper 上报的状态。
+- Helper 侧：除 generate-pf 外，增加 CLI 编排（拉起、停止、退出码与重连决策、Cookie 持久化复用 SessionRecord、pf 加载/卸载、vpnc-script）。
+- Rust 核：会话驱动复用为编排决策逻辑；认证结果映射从 obtain_cookie 码改为 CLI 退出码 + 脚本钩子信号（Phase 1 落实）。
+- 本决议之前的 Tunnel 相关设计段落（第二节架构、第六节第 3 条隧道层）以本节为准，不再单独改旧文。
