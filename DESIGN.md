@@ -409,6 +409,8 @@ Helper 以 root 身份把 SessionRecord 存于 Helper 专属文件（0600，仅 
 
 Phase 1 的完成标准是左列全绿；右列仍挂起，不假装已验。
 
+2026-10-31 收口实证（CI run 全绿，commit 9db2dd9）：macOS runner 上又多验了引擎整环——mock AnyConnect 网关（重放 ocserv 真实认证表单 XML）下，密码认证 → Cookie 捕获 → Cookie 复用 → 密码兜底 → 次数耗尽 TERMINAL 全通；Linux CI 的行为契约（错密码 exit 1、假 Cookie exit 1）同趟绿。左列至此全部兑现，Phase 1 闭环；右列不动。
+
 ### 16.9 XPC 落实（Phase 1 step 3）
 
 共享契约在 Sources/Shared/HelperXPC.swift（App 与 Helper 双目标编译，防漂移）：
