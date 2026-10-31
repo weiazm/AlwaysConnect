@@ -423,3 +423,9 @@ Helper 侧（Sources/Helper/HelperDaemon.swift）：`daemon` 子命令起 NSXPCL
 App 侧（Sources/App/HelperClient.swift）：懒建连接，中断/失效时面板显示 Helper 未运行；面板（PanelAndSettings.swift）状态源已切到 HelperClient，开关 off 时先出内联确认行，确认后才断开；快捷入口四格待 Settings 页落地时再接（Phase 2）。
 
 Mac-proof 待验证项（不在 runner 上假装）：launchd plist 与 SMAppService 安装、签名后的团队标识校验、菜单栏图标四态、XPC 端到端（App ↔ Helper ↔ openconnect）实跑。
+
+### 16.10 子进程看门狗（待定，不做假证明）
+
+已观测的挂起类：子进程活着、既不退出也不再产生事件（2026-10-31 macOS runner 上 mock 的 keep-alive 401 导致 openconnect 9.21 永久等待，引擎 120 秒无任何 STATE 变化）。该次实例的根因在 mock 侧（401 未关连接，与真实网关行为不符），已修 mock，不改引擎。
+
+引擎侧目前没有单次子进程运行的超时看门狗。补一个的约束：超时必须长于 120 秒等批准超时（等批准先触发），且 hook 到达后立即解除（隧道建立后子进程跑几小时是正常态）。在真实网关能验证 push 行为之前不加——一个未经验证的看门狗可能在等批准时误杀子进程。

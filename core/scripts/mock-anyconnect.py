@@ -116,6 +116,13 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
     def do_CONNECT(self):
         # Tunnel never comes up: the client classifies this Transient.
+        # Close the connection afterwards, as a real gateway does on
+        # a failed CONNECT: with HTTP/1.1 keep-alive and no close, a
+        # client that waits for EOF after the 401 deadlocks against
+        # this handler waiting for its next request (measured
+        # 2026-10-31: macOS openconnect 9.21 stuck forever on a
+        # keep-alive 401, no exit, no further traffic).
+        self.close_connection = True
         data = b"Cookie is not acceptable"
         self.send_response(401)
         self.send_header("Content-Type", "text/plain")
