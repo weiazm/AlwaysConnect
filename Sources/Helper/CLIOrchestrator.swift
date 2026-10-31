@@ -57,6 +57,12 @@ final class CLIOrchestrator {
         /// default Application Support dir (correct for the root
         /// daemon; run-once tests inject a temp dir).
         var supportDir: URL?
+        /// Test-tool only: stream each redacted child output line to
+        /// stderr as it arrives (default off; the STATE/TERMINAL
+        /// protocol stays clean). Used by CI to see what the child
+        /// did before a hang, since the in-memory tail is lost when
+        /// the process is killed.
+        var debugChildOutput = false
     }
 
     enum FedCredential { case password, cookie }
@@ -315,6 +321,10 @@ final class CLIOrchestrator {
 
     private func handleLine(_ line: String, isStdout: Bool) {
         appendTail(Self.redact(line))
+        if config.debugChildOutput,
+           let data = ("CHILD \(isStdout ? "out" : "err"): \(Self.redact(line))\n").data(using: .utf8) {
+            FileHandle.standardError.write(data)
+        }
         if line.hasPrefix("AC_HOOK ") {
             handleHook(String(line.dropFirst("AC_HOOK ".count)))
             return

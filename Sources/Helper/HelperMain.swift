@@ -132,10 +132,15 @@ struct HelperMain {
         var scriptPath: String?
         var maxAttempts: Int?
         var noRoutes = false
+        var debugChildOutput = false
         while let flag = args.first {
             args = args.dropFirst()
             if flag == "--no-routes" {
                 noRoutes = true
+                continue
+            }
+            if flag == "--debug-child-output" {
+                debugChildOutput = true
                 continue
             }
             guard let value = args.first else {
@@ -202,7 +207,8 @@ struct HelperMain {
             allowNetworks: allow.split(separator: ",").map(String.init),
             maxAttempts: maxAttempts,
             noRoutes: noRoutes,
-            supportDir: supportDirPath.map { URL(fileURLWithPath: $0) }
+            supportDir: supportDirPath.map { URL(fileURLWithPath: $0) },
+            debugChildOutput: debugChildOutput
         )
         let engine = CLIOrchestrator(config: config)
         let done = DispatchSemaphore(value: 0)

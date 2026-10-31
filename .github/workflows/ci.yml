@@ -119,7 +119,7 @@ jobs:
           # even if it hangs, the mock log and partial output are
           # always printed (a plain command substitution would die
           # with the step timeout and hide the evidence).
-          (printf 'testpass\n' | "$HELPER" run-once --server https://127.0.0.1:4444 --user testuser --cafile /tmp/ac-mock/ca-cert.pem --max-attempts 3 --no-routes --cookie-store /tmp/ac-engine-test/session.json --support-dir /tmp/ac-engine-test > /tmp/ac-engine-test/out.txt 2>&1; echo $? > /tmp/ac-engine-test/exit.txt) &
+          (printf 'testpass\n' | "$HELPER" run-once --server https://127.0.0.1:4444 --user testuser --cafile /tmp/ac-mock/ca-cert.pem --max-attempts 3 --no-routes --debug-child-output --cookie-store /tmp/ac-engine-test/session.json --support-dir /tmp/ac-engine-test > /tmp/ac-engine-test/out.txt 2>&1; echo $? > /tmp/ac-engine-test/exit.txt) &
           RUN_PID=$!
           for _ in $(seq 1 24); do
             kill -0 "$RUN_PID" 2>/dev/null || break
