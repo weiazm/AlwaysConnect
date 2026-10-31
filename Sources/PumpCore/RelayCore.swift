@@ -215,6 +215,7 @@ final class FDEndpoint: PumpEndpoint {
         pumpTrace("fd=\(fd) closeRead() called")
         queue.async { [weak self] in
             guard let self, !self.closed, !self.readClosed else { return }
+            pumpTrace("fd=\(fd) closeRead block enter")
             self.readClosed = true
             Darwin.shutdown(self.fd, Int32(SHUT_RD))
             self.suspendRead()
@@ -222,6 +223,7 @@ final class FDEndpoint: PumpEndpoint {
                 self.pendingRead = nil
                 pending(nil, nil)
             }
+            pumpTrace("fd=\(fd) closeRead block done")
         }
     }
 
@@ -229,6 +231,7 @@ final class FDEndpoint: PumpEndpoint {
         pumpTrace("fd=\(fd) closeWrite() called")
         queue.async { [weak self] in
             guard let self, !self.closed, !self.writeClosed else { return }
+            pumpTrace("fd=\(fd) closeWrite block enter")
             self.writeClosed = true
             if self.outBuffer.isEmpty {
                 Darwin.shutdown(self.fd, Int32(SHUT_WR))
@@ -237,6 +240,7 @@ final class FDEndpoint: PumpEndpoint {
                 self.writeShutdownPending = true
                 self.resumeWrite()
             }
+            pumpTrace("fd=\(fd) closeWrite block done")
         }
     }
 
@@ -247,12 +251,15 @@ final class FDEndpoint: PumpEndpoint {
         // this block evaporate with the endpoint and leak the fd.
         queue.async { [self] in
             guard !closed else { return }
+            pumpTrace("fd=\(fd) close block enter")
             closed = true
             readSource?.cancel()
             writeSource?.cancel()
+            pumpTrace("fd=\(fd) close block cancelled")
             // Sources are cancelled on this queue, so no handler can
             // be using the fd concurrently from here on.
             Darwin.close(fd)
+            pumpTrace("fd=\(fd) close block done")
         }
     }
 

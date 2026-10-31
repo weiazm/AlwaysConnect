@@ -105,6 +105,7 @@ check("relay bytes both directions") {
     // Same drain as the half-close check: let the endpoints' async
     // closes finish before the next check reuses fd numbers.
     usleep(100_000)
+    log("  bytes check: drained, returning")
     return true
 }
 
