@@ -256,6 +256,27 @@ final class FDEndpoint: PumpEndpoint {
             readSource?.cancel()
             writeSource?.cancel()
             pumpTrace("fd=\(fd) close block cancelled")
+            // A cancelled source that is suspended never runs its
+            // cancel handler — and is not released cleanly — until it
+            // is resumed. Resume any suspended source here so
+            // cancellation finalizes on this queue before the
+            // endpoint (and its sources) can deallocate: releasing a
+            // cancelled-but-suspended source traps (SIGTRAP), which
+            // is what killed PumpTest nondeterministically in
+            // teardown. The flags are authoritative (all flag changes
+            // happen on this queue), so resume only what is
+            // suspended; a resumed source is left alone. Handlers
+            // that fire after this point see closed == true and
+            // return immediately.
+            if !readResumed {
+                readResumed = true
+                readSource?.resume()
+            }
+            if !writeResumed {
+                writeResumed = true
+                writeSource?.resume()
+            }
+            pumpTrace("fd=\(fd) close block resumed")
             // Sources are cancelled on this queue, so no handler can
             // be using the fd concurrently from here on.
             Darwin.close(fd)
