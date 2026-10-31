@@ -153,7 +153,18 @@ jobs:
           HELPER=$(find ~/Library/Developer/Xcode/DerivedData/AlwaysConnect-*/Build/Products/Debug -maxdepth 1 -name AlwaysConnectHelper -type f | head -1)
           test -n "$HELPER"
           "$HELPER" generate-pf --phys en0 --tun utun5 --gateway 203.0.113.10 --allow 192.168.0.0/16 | grep -q "block drop out quick on en0 all"
+          "$HELPER" generate-pf --phys en0 --tun utun5 --gateway 203.0.113.10 --allow 192.168.0.0/16 --connected | grep -q "pass out quick on en0 all"
           if "$HELPER" generate-pf --phys en0 --tun utun5 --allow 192.168.0.0/16 2>/dev/null; then
             echo "expected failure without --gateway" >&2
             exit 1
           fi
+      - name: Run PumpTest harness (relay + interface select + bind)
+        # Builds the PumpTest tool target explicitly (it is not in the
+        # App scheme) and runs it: relay bytes/half-close/error
+        # teardown over real socketpairs, interface selection on
+        # canned lists, and a real IP_BOUND_IF setsockopt.
+        run: |
+          xcodebuild -project AlwaysConnect.xcodeproj -target AlwaysConnectPumpTest -destination 'platform=macOS' build CODE_SIGNING_ALLOWED=NO
+          PUMPTEST=$(find ~/Library/Developer/Xcode/DerivedData/AlwaysConnect-*/Build/Products/Debug -maxdepth 1 -name AlwaysConnectPumpTest -type f | head -1)
+          test -n "$PUMPTEST"
+          "$PUMPTEST"

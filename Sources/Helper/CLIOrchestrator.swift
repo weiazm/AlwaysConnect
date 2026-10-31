@@ -385,7 +385,9 @@ final class CLIOrchestrator {
             approvalWorkItem?.cancel()
             _ = driver.authOutcome(0) // Success
             reportState(detail: "tunnel up")
-            loadPf(tunnelIf: tun, gatewayIps: gateway.map { [$0] } ?? [])
+            loadPf(
+                tunnelIf: tun, gatewayIps: gateway.map { [$0] } ?? [],
+                allowDirectEgress: true)
         case "disconnect-held", "disconnect-manual":
             // State is driven by the child exit, not by the script.
             break
@@ -462,6 +464,15 @@ final class CLIOrchestrator {
             let action = driver.drop(cookieAlive: false)
             if case .reauthenticate(let delay) = action {
                 reportState(detail: "dropped, retrying")
+                // Tunnel is down: reload the blocking set before the
+                // respawn, so the drop window is fail-closed again
+                // (DESIGN.md §17.5). No-op when nothing was loaded.
+                if let last = lastPfInputs {
+                    loadPf(
+                        tunnelIf: last.tunnelIf,
+                        gatewayIps: last.gatewayIps,
+                        allowDirectEgress: false)
+                }
                 respawnAfter(delay)
                 return
             }
@@ -493,7 +504,84 @@ final class CLIOrchestrator {
 
     // MARK: - pf + manual stop
 
-    private func loadPf(tunnelIf: String?, gatewayIps: [String]) {
+    /// Last pf inputs that were successfully loaded, for the
+    /// drop-path reload (blocking set) and the daemon-restart restore.
+    /// Written to disk on every load (DESIGN.md §17.5); cleared on
+    /// manual unload, so a present file always means "pf was loaded
+    /// and not manually unloaded".
+    private struct PfState: Codable {
+        var tunnelIf: String
+        var gatewayIps: [String]
+        var physicalIf: String
+        var allowNetworks: [String]
+    }
+
+    private var lastPfInputs: (tunnelIf: String, gatewayIps: [String])?
+
+    private func supportDirURL() -> URL {
+        config.supportDir
+            ?? CookieStore.defaultFileURL.deletingLastPathComponent()
+    }
+
+    private func pfStateURL() -> URL {
+        supportDirURL().appendingPathComponent("pf-state.json")
+    }
+
+    private func persistPfState(tunnelIf: String, gatewayIps: [String]) {
+        let state = PfState(
+            tunnelIf: tunnelIf,
+            gatewayIps: gatewayIps,
+            physicalIf: config.physicalIf,
+            allowNetworks: config.allowNetworks)
+        do {
+            let dir = supportDirURL()
+            try FileManager.default.createDirectory(
+                at: dir, withIntermediateDirectories: true,
+                attributes: [.posixPermissions: 0o700])
+            let data = try JSONEncoder().encode(state)
+            try data.write(to: pfStateURL(), options: [.atomic])
+            try FileManager.default.setAttributes(
+                [.posixPermissions: 0o600],
+                ofItemAtPath: pfStateURL().path)
+        } catch {
+            // Best effort only: the in-memory lastPfInputs still
+            // drives the drop-path reload; only the daemon-restart
+            // restore loses its input, which fails closed by leaving
+            // whatever anchor was loaded in place.
+            fputs("CLIOrchestrator: pf-state persist failed\n", stderr)
+        }
+    }
+
+    private func clearPfState() {
+        try? FileManager.default.removeItem(at: pfStateURL())
+    }
+
+    /// Daemon-start restore (DESIGN.md §17.5): if a previous session
+    /// left pf loaded (state file present — manual stops delete it),
+    /// reload the BLOCKING set. A restarted daemon defaults to
+    /// fail-closed; a surviving tunnel's direct flows degrade to VPN
+    /// until the next reconnect. Best effort and silent: the daemon
+    /// must start even if the restore cannot run.
+    static func restoreBlockingSetFromDisk() {
+        let dir = CookieStore.defaultFileURL.deletingLastPathComponent()
+        let url = dir.appendingPathComponent("pf-state.json")
+        guard let data = try? Data(contentsOf: url),
+              let state = try? JSONDecoder().decode(
+                PfState.self, from: data),
+              let text = PfAnchor.generate(
+                physicalIf: state.physicalIf,
+                tunnelIf: state.tunnelIf,
+                gatewayIps: state.gatewayIps,
+                allowNetworks: state.allowNetworks,
+                allowDirectEgress: false) else {
+            return
+        }
+        try? PfController.load(anchorText: text)
+    }
+
+    private func loadPf(
+        tunnelIf: String?, gatewayIps: [String], allowDirectEgress: Bool
+    ) {
         guard let tun = tunnelIf, !gatewayIps.isEmpty else {
             pfError = "pf 兜底未生效：缺少隧道接口或网关 IP"
             reportState(detail: pfError!)
@@ -503,7 +591,8 @@ final class CLIOrchestrator {
             physicalIf: config.physicalIf,
             tunnelIf: tun,
             gatewayIps: gatewayIps,
-            allowNetworks: config.allowNetworks
+            allowNetworks: config.allowNetworks,
+            allowDirectEgress: allowDirectEgress
         ) else {
             pfError = "pf 兜底未生效：规则生成被拒"
             reportState(detail: pfError!)
@@ -512,6 +601,8 @@ final class CLIOrchestrator {
         do {
             try PfController.load(anchorText: text)
             pfError = nil
+            lastPfInputs = (tun, gatewayIps)
+            persistPfState(tunnelIf: tun, gatewayIps: gatewayIps)
         } catch {
             // Non-terminal: the tunnel's own routing still protects;
             // the UI shows the red line, never silence (UI-DESIGN §七).
@@ -548,6 +639,7 @@ final class CLIOrchestrator {
         } catch {
             fputs("CLIOrchestrator: pf unload failed (best effort)\n", stderr)
         }
+        clearPfState()
         if let url = manualFlagURL {
             try? FileManager.default.removeItem(at: url)
             manualFlagURL = nil

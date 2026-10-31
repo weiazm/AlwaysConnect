@@ -3,12 +3,20 @@ import NetworkExtension
 /// Transparent proxy provider for per-app split rules.
 /// Same mechanism as IVPN / PIA / GlobalProtect on macOS.
 ///
-/// How it works: the system hands every NEW outbound TCP/UDP connection to
-/// this extension. The extension checks the source app's identity against
-/// the rule list:
-/// - Excluded apps -> forwarded out the physical interface (direct).
-/// - Everything else -> declined, so it follows normal routing (the VPN
-///   tunnel) — this is the mature "exclusion" model.
+/// How it works (DESIGN.md §17): the system hands every NEW outbound
+/// TCP/UDP connection to this extension. The extension checks the
+/// source app's identity against the rule list:
+/// - Direct-bound flows -> pumped out the physical interface
+///   (FlowPump, via an IP_BOUND_IF socket that bypasses the tunnel).
+/// - Everything else -> declined (handleNewFlow returns false), so it
+///   follows normal routing (the VPN tunnel) — this is the mature
+///   "exclusion" model.
+///
+/// Failure direction (DESIGN.md §17.1): a synchronous setup failure
+/// (no physical interface, unusable endpoint) returns false, so the
+/// flow goes via VPN. An asynchronous failure after true was returned
+/// closes the connection instead of silently falling back to VPN, so
+/// a direct rule cannot silently become a VPN route.
 ///
 /// Known limits (see DESIGN.md §4.3, must be surfaced in UI, not hidden):
 /// - Only new connections are affected; already-open connections keep
@@ -23,16 +31,13 @@ import NetworkExtension
 final class TransparentProxyProvider: NETransparentProxyProvider {
 
     /// Rule engine (Rust core, same bridge as the Tunnel). Configured
-    /// from the App Groups container in startProxy (Phase 2); until
-    /// then every decision fails closed to the VPN.
+    /// in startProxy from the App Groups container; until then every
+    /// decision fails closed to the VPN.
     private var ruleEngine: RustRuleEngine?
 
-    /// False until the Phase 2 flow pump lands (TCP/UDP byte relay via
-    /// NWConnection). While false, direct-bound flows ALSO take the VPN:
-    /// that is the safe direction — no leak, only a wrong route for
-    /// exclusions — whereas returning true without a pump would stall
-    /// the flow outright.
-    private let pumpAvailable = false
+    /// Live pumps, by identity. Removed on each pump's onDone;
+    /// stopProxy cancels whatever is left.
+    private var activePumps: [ObjectIdentifier: FlowPumpCancellable] = [:]
 
     /// Build the rule engine from a profile + rules (called by startProxy
     /// once rules are loaded from the App Groups container).
@@ -80,26 +85,63 @@ final class TransparentProxyProvider: NETransparentProxyProvider {
     }
 
     override func startProxy(options: [String: Any]?) async throws {
-        // TODO (Phase 0/2):
-        // 1. Load app rules from the App Groups container, then
-        //    configureEngine(profile:rules:).
-        // 2. Verify coexistence with the packet tunnel: excluded flows must
-        //    egress via the physical interface while the tunnel is up.
-        // 3. Validate (or rule out) inverse mode.
+        // Load profile + rules from the App Groups container. The keys
+        // ("profile", "rules") are shared with ProfileStore in the App
+        // target, which the Proxy target cannot import — keep the
+        // strings in sync with ProfileStore by hand. Any failure here
+        // leaves the engine nil, so every flow fails closed to VPN.
+        if let defaults = UserDefaults(
+            suiteName: "group.com.alwaysconnect.app"),
+           let profileData = defaults.data(forKey: "profile"),
+           let profile = try? JSONDecoder().decode(
+            Profile.self, from: profileData),
+           let rulesData = defaults.data(forKey: "rules"),
+           let rules = try? JSONDecoder().decode(
+            [Rule].self, from: rulesData) {
+            configureEngine(profile: profile, rules: rules)
+        }
+        // Coexistence with the packet tunnel is a Mac-only verification
+        // (DESIGN.md §17.6): excluded flows must egress via the
+        // physical interface while the tunnel is up, and the pf
+        // connected set must be loaded for them to pass.
     }
 
     override func stopProxy(with reason: NEProviderStopReason) async {
-        // TODO (Phase 2)
+        let pumps = activePumps.values
+        activePumps = [:]
+        for pump in pumps { pump.cancel() }
         ruleEngine = nil
     }
 
     override func handleNewFlow(_ flow: NEAppProxyFlow) -> Bool {
         let (app, domain, ip) = extract(flow)
-        let direct = directEgress(app: app, domain: domain, ip: ip)
-        // Phase 2: when direct is true AND the pump exists, return true
-        // and relay the flow out the physical interface. Until then,
-        // fail closed (see pumpAvailable).
-        if direct && pumpAvailable {
+        guard directEgress(app: app, domain: domain, ip: ip) else {
+            return false
+        }
+        // No usable physical interface -> VPN (fail closed, §17.3).
+        guard let physicalIf = discoverPhysicalInterface() else {
+            return false
+        }
+        let ifIndex = interfaceIndex(for: physicalIf)
+        guard ifIndex != 0 else { return false }
+        if let tcp = flow as? NEAppProxyTCPFlow {
+            let pump = TCPFlowPump(flow: tcp, ifIndex: ifIndex)
+            let id = ObjectIdentifier(pump)
+            pump.onDone = { [weak self] in
+                self?.activePumps.removeValue(forKey: id)
+            }
+            guard pump.start() else { return false }
+            activePumps[id] = pump
+            return true
+        }
+        if let udp = flow as? NEAppProxyUDPFlow {
+            let pump = UDPFlowPump(flow: udp, ifIndex: ifIndex)
+            let id = ObjectIdentifier(pump)
+            pump.onDone = { [weak self] in
+                self?.activePumps.removeValue(forKey: id)
+            }
+            guard pump.start() else { return false }
+            activePumps[id] = pump
             return true
         }
         return false

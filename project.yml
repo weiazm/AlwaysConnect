@@ -25,6 +25,7 @@ targets:
     platform: macOS
     sources:
       - Sources/Proxy
+      - Sources/PumpCore
       - Sources/Bridge
       - Sources/Shared
     settings:
@@ -36,6 +37,14 @@ targets:
       path: Sources/Proxy/Info.plist
     entitlements:
       path: Sources/Proxy/AlwaysConnectProxy.entitlements
+  AlwaysConnectPumpTest:
+    type: tool
+    platform: macOS
+    sources:
+      - Sources/PumpTest
+      - Sources/PumpCore
+    settings:
+      PRODUCT_BUNDLE_IDENTIFIER: com.alwaysconnect.app.pumptest
   AlwaysConnectHelper:
     type: tool
     platform: macOS

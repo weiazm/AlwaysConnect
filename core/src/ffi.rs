@@ -306,7 +306,10 @@ pub extern "C" fn ac_session_manual_disconnect(
 // ac_string_free, or null on bad input (null pointers, non-UTF8,
 // invalid networks/IPs, empty gateway list). The two list arguments
 // are comma-separated; surrounding whitespace is trimmed; an empty
-// allow list is valid (no allow lines in the output).
+// allow list is valid (no allow lines in the output). The final
+// argument selects the pf set (DESIGN.md §17.5): 0 = blocking set
+// (fail-closed default), nonzero = connected set (physical outbound
+// passes, so provider-pumped direct traffic can egress).
 
 use crate::pf::{PfInput, PfError};
 use std::ffi::CString;
@@ -334,6 +337,7 @@ pub extern "C" fn ac_pf_generate(
     tunnel_if: *const c_char,
     gateway_ips_csv: *const c_char,
     allow_networks_csv: *const c_char,
+    allow_direct_egress: i32,
 ) -> *mut c_char {
     let (Some(physical_if), Some(tunnel_if), Some(gateway_ips_csv), Some(allow_networks_csv)) = (
         read_cstr(physical_if),
@@ -348,6 +352,7 @@ pub extern "C" fn ac_pf_generate(
         tunnel_if,
         gateway_ips: split_csv(&gateway_ips_csv),
         allow_networks: split_csv(&allow_networks_csv),
+        allow_direct_egress: allow_direct_egress != 0,
     };
     match crate::pf::generate(&input) {
         Ok(text) => match CString::new(text) {
@@ -481,18 +486,32 @@ mod tests {
             tun.as_ptr(),
             gw.as_ptr(),
             allow.as_ptr(),
+            0,
         );
         assert!(!out.is_null());
         let text = unsafe { CStr::from_ptr(out).to_str().unwrap().to_owned() };
         assert!(text.contains("block drop out quick on en0 all\n"));
         assert!(text.contains("pass out quick on en0 to 203.0.113.10\n"));
         ac_string_free(out);
+        // Connected set (nonzero flag) ends with a pass, not a block.
+        let out = ac_pf_generate(
+            phys.as_ptr(),
+            tun.as_ptr(),
+            gw.as_ptr(),
+            allow.as_ptr(),
+            1,
+        );
+        assert!(!out.is_null());
+        let text = unsafe { CStr::from_ptr(out).to_str().unwrap().to_owned() };
+        assert!(text.ends_with("pass out quick on en0 all\n"));
+        ac_string_free(out);
         // Bad input yields null, never a crash.
         assert!(ac_pf_generate(
             std::ptr::null(),
             tun.as_ptr(),
             gw.as_ptr(),
-            allow.as_ptr()
+            allow.as_ptr(),
+            0
         )
         .is_null());
         let empty_gw = c("");
@@ -500,7 +519,8 @@ mod tests {
             phys.as_ptr(),
             tun.as_ptr(),
             empty_gw.as_ptr(),
-            allow.as_ptr()
+            allow.as_ptr(),
+            0
         )
         .is_null());
         let bad_net = c("10.0.0.0/33");
@@ -508,7 +528,8 @@ mod tests {
             phys.as_ptr(),
             tun.as_ptr(),
             gw.as_ptr(),
-            bad_net.as_ptr()
+            bad_net.as_ptr(),
+            0
         )
         .is_null());
         ac_string_free(std::ptr::null_mut());

@@ -18,7 +18,14 @@
 //!    kill-switch allowlist, deduplicated, order preserved).
 //! 6. Bonjour discovery passes (mDNS 224.0.0.251 / ff02::fb port 5353)
 //!    and IPv6 link-local (fe80::/10) passes.
-//! 7. Everything else outbound on the physical interface is dropped.
+//! 7. The final rule depends on the mode (DESIGN.md §17.5):
+//!    - blocking set (allow_direct_egress = false, the default): everything
+//!      else outbound on the physical interface is dropped. This is the
+//!      fail-closed set, loaded when the tunnel is down.
+//!    - connected set (allow_direct_egress = true): everything else
+//!      outbound on the physical interface passes, so provider-pumped
+//!      direct-rule traffic can egress. Loaded only on the connect
+//!      hook, while the tunnel is up; a drop reloads the blocking set.
 //!
 //! Caller responsibilities, stated plainly because the generator cannot
 //! enforce them: resolve gateway hostnames to IPs BEFORE calling (this
@@ -48,6 +55,11 @@ pub struct PfInput {
     /// (e.g. "192.168.0.0/16"). Union of split-excludes and the
     /// kill-switch allowlist; deduplicated in output.
     pub allow_networks: Vec<String>,
+    /// Connected set (DESIGN.md §17.5): when true, the final rule
+    /// passes the rest of physical-interface outbound instead of
+    /// dropping it, so provider-pumped direct traffic can egress.
+    /// False (the default) keeps the fail-closed blocking set.
+    pub allow_direct_egress: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -169,7 +181,11 @@ pub fn generate(input: &PfInput) -> Result<String, PfError> {
         "pass out quick on {phys} proto udp to ff02::fb port 5353\n"
     ));
     out.push_str(&format!("pass out quick on {phys} inet6 to fe80::/10\n"));
-    out.push_str(&format!("block drop out quick on {phys} all\n"));
+    if input.allow_direct_egress {
+        out.push_str(&format!("pass out quick on {phys} all\n"));
+    } else {
+        out.push_str(&format!("block drop out quick on {phys} all\n"));
+    }
     Ok(out)
 }
 
@@ -183,6 +199,7 @@ mod tests {
             tunnel_if: "utun5".to_string(),
             gateway_ips: vec!["203.0.113.10".to_string()],
             allow_networks: vec!["192.168.0.0/16".to_string()],
+            allow_direct_egress: false,
         }
     }
 
@@ -200,6 +217,30 @@ pass out quick on en0 proto udp to ff02::fb port 5353\n\
 pass out quick on en0 inet6 to fe80::/10\n\
 block drop out quick on en0 all\n";
         assert_eq!(generate(&secure_input()).unwrap(), expected);
+    }
+
+    #[test]
+    fn connected_mode_passes_physical_outbound() {
+        let input = PfInput {
+            allow_direct_egress: true,
+            ..secure_input()
+        };
+        let expected = "# AlwaysConnect kill-switch anchor (generated; do not hand-edit)\n\
+# Physical interface: en0. Tunnel interface: utun5.\n\
+pass out quick on utun5 all\n\
+pass out quick on lo0 all\n\
+pass out quick proto udp from any port 68 to any port 67\n\
+pass out quick on en0 to 203.0.113.10\n\
+pass out quick on en0 to 192.168.0.0/16\n\
+pass out quick on en0 proto udp to 224.0.0.251 port 5353\n\
+pass out quick on en0 proto udp to ff02::fb port 5353\n\
+pass out quick on en0 inet6 to fe80::/10\n\
+pass out quick on en0 all\n";
+        assert_eq!(generate(&input).unwrap(), expected);
+        // The blocking set is unchanged by the new field's default.
+        assert!(generate(&secure_input())
+            .unwrap()
+            .ends_with("block drop out quick on en0 all\n"));
     }
 
     #[test]

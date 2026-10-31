@@ -30,6 +30,10 @@ final class HelperDaemon: NSObject, NSXPCListenerDelegate {
     }
 
     func start() {
+        // Fail-closed default on daemon restart (DESIGN.md §17.5):
+        // a leftover pf-state file means a previous session left pf
+        // loaded, so reload the blocking set before accepting clients.
+        CLIOrchestrator.restoreBlockingSetFromDisk()
         listener.resume()
     }
 

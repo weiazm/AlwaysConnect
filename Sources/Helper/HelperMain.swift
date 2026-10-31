@@ -65,6 +65,9 @@ struct HelperMain {
     /// Usage:
     ///   AlwaysConnectHelper generate-pf --phys <if> --tun <if>
     ///       --gateway <ip[,ip...]> [--allow <cidr[,cidr...]>]
+    ///       [--connected]
+    /// --connected emits the connected set (physical outbound passes,
+    /// DESIGN.md §17.5); without it the blocking set is emitted.
     /// Exit codes: 0 success, 1 generation rejected, 2 usage error.
     static func generatePf(args: ArraySlice<String>) {
         var args = args
@@ -72,8 +75,13 @@ struct HelperMain {
         var tun: String?
         var gateway: String?
         var allow: String?
+        var connected = false
         while let flag = args.first {
             args = args.dropFirst()
+            if flag == "--connected" {
+                connected = true
+                continue
+            }
             guard let value = args.first else {
                 fputs("missing value for \(flag)\n", stderr)
                 exit(2)
@@ -99,7 +107,8 @@ struct HelperMain {
             physicalIf: phys,
             tunnelIf: tun,
             gatewayIps: gateways,
-            allowNetworks: allows
+            allowNetworks: allows,
+            allowDirectEgress: connected
         ) else {
             fputs("pf generation rejected (bad interface, empty gateway, or invalid network/IP)\n", stderr)
             exit(1)
@@ -256,7 +265,7 @@ struct HelperMain {
 
     private static func usage() {
         fputs("Usage:\n", stderr)
-        fputs("  AlwaysConnectHelper generate-pf --phys <if> --tun <if> --gateway <ip[,ip...]> [--allow <cidr[,cidr...]>]\n", stderr)
+        fputs("  AlwaysConnectHelper generate-pf --phys <if> --tun <if> --gateway <ip[,ip...]> [--allow <cidr[,cidr...]>] [--connected]\n", stderr)
         fputs("  AlwaysConnectHelper run-once --server <url> --user <name> [--group <group>] [--phys <if>] [--allow <cidr,...>] [--cookie-store <path>] [--support-dir <path>] [--openconnect <path>] [--cafile <path>] [--script <path>] [--max-attempts <n>] [--no-routes]\n", stderr)
         fputs("  AlwaysConnectHelper daemon\n", stderr)
     }

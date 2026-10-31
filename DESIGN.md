@@ -428,6 +428,87 @@ Mac-proof 待验证项（不在 runner 上假装）：launchd plist 与 SMAppSer
 
 ### 16.10 子进程看门狗（待定，不做假证明）
 
-已观测的挂起类：子进程活着、既不退出也不再产生事件（2026-10-31 macOS runner 上 mock 的 keep-alive 401 导致 openconnect 9.21 永久等待，引擎 120 秒无任何 STATE 变化）。该次实例的根因在 mock 侧（401 未关连接，与真实网关行为不符），已修 mock，不改引擎。
+已观测的挂起类：子进程活着、既不退出也不再产生事件。2026-10-31 的实例曾先后归因于 mock 的 keep-alive 401（已修 mock，401 后关连接，无害但非主因）与 stdin 保持打开（已改喂完即关，无害但非主因）；最终实证根因是引擎的 redact() 无限循环：掩码替换后键仍留在串里，while 循环原地重匹配同一处，引擎串行队列冻在第一条 Set-Cookie 行，子进程独自跑完而引擎再无事件。定位靠 run-once --debug-child-output 的流式输出，修法为掩码后搜索起点移到掩码值之后（commit 6ed87d6）。
 
 引擎侧目前没有单次子进程运行的超时看门狗。补一个的约束：超时必须长于 120 秒等批准超时（等批准先触发），且 hook 到达后立即解除（隧道建立后子进程跑几小时是正常态）。在真实网关能验证 push 行为之前不加——一个未经验证的看门狗可能在等批准时误杀子进程。
+
+## 十七、Phase 2：Proxy 数据泵契约
+
+范围：Phase 2 在此定义为数据泵落地（本节 17.1–17.7）。旧 §十二列表中的菜单栏、统计、Settings 页、规则测试器、泄漏自检等顺延，不在本节；与实测不符处以实测为准并回改本节，不静默偏离。
+
+### 17.1 语义：只泵直连流
+
+handleNewFlow 的决策表（引擎是唯一判据）：
+
+| 引擎判定 | handleNewFlow 返回 | 流向 |
+| --- | --- | --- |
+| 直连，且泵建成 | true | 泵出物理口（17.2） |
+| 直连，但泵建成失败（无物理口、绑定失败、解析失败、建 socket 失败） | false | 按系统路由走隧道（安全方向：只错路，不漏网） |
+| 走 VPN | false | 按系统路由走隧道 |
+| 引擎未配置（startProxy 未完成规则加载） | false | 走 VPN（故障关闭，与 Phase 1 一致） |
+
+绝不出现“判直连但无泵”的悬空态：泵建失败不返回 true，流不会悬在 provider 里。
+
+区分两种失败：同步建泵失败（无物理口、端点不可用）返回 false，走 VPN；返回 true 之后的异步失败（flow open 失败、connect 超时）无法把流交回系统，只能断流。不断流回 VPN 是有意的：直连规则静默变成 VPN 路由会违背用户写规则的本意，且失败可见、用户可改规则。
+
+### 17.2 绕隧道机制：IP_BOUND_IF
+
+出向 socket 在 connect 之前绑定物理口：IPv4 用 `IP_BOUND_IF`、IPv6 用 `IPV6_BOUND_IF`，值为物理口索引（if_nametoindex）。只绑接口不绑源地址：源地址绑定改不了目的路由，绑接口才强制出物理口。绑定失败 → 泵建失败 → 按 17.1 走 VPN。
+
+已知限制（与 §4.3 一致，面板不承诺反向）：系统 DNS 仍走 VPN。直连流的目的地若是主机名，先经系统解析（getaddrinfo）得 IP，再对该 IP 建绑定连接；解析查询本身走 VPN，不产生业务流量旁路。TCP/UDP 之外（ping 等原始 socket）恒走 VPN。
+
+### 17.3 物理口发现：逐流 getifaddrs
+
+provider 进程内自行发现，不依赖 Helper 传入（两者进程不同，App Groups 不传运行时口状态）。每次建泵时重新枚举，接口变化（Wi-Fi 漫游、插拔网线）即时生效：
+
+1. 过滤：flags 含 IFF_UP 且 IFF_RUNNING、非 IFF_LOOPBACK、名不以 utun/stf/gif/pdp_ip/ipsec/ppp 开头、有 IPv4 地址。
+2. 唯一幸存 → 它；多个 → en0 优先，其次最小 enN，其次字典序首个；零个 → 泵建失败 → 走 VPN。
+3. 名字转索引用 if_nametoindex；返回 0 → 泵建失败。
+
+Helper 的 physicalIf（默认 en0）与 provider 的发现结果在单物理口 Mac 上一致；多宿主下两者可能错位（泵口与 pf 网关口不一致）是已知限制，见 17.6，不静默处理。
+
+### 17.4 中继核（PumpCore）：端点抽象 + 双向中继
+
+中继核与 NetworkExtension 解耦，可在 runner 上实测（17.6）：
+
+- 端点协议：异步 read（Data? + Error?，nil 数据 + nil 错误 = EOF）、write、closeRead、closeWrite。
+- 双向各一循环，读→写串行（读下一块只在上一块写完后，天然背压；个人客户端流量下足够，不做多读并发）。
+- 半关闭：一方 EOF → 关另一方写侧，另一方向继续排空直至自身 EOF；任一侧写错 → 双向关闭；两方向都终结 → onDone 回调，provider 释放泵。
+- NE 适配：TCP 用 open/readData/writeData/closeReadWithError/closeWriteWithError；UDP 按远端端点分 socket（一个 flow 内多远端各一个绑定 socket），datagram 中继，120 秒空闲关闭。
+- fd 适配（DispatchIO + shutdown 语义：closeWrite = shutdown(SHUT_WR) 而非关 fd，保证另一方向能排空）供 PumpTest harness 用同一中继核，不另写一套。
+
+### 17.5 pf 两态协同：泵生效的前提
+
+泵不改 pf 就等于没泵：连接态若仍用封堵集，泵出的直连流会被物理口末尾 block 规则挡掉，应用/域名直连规则全部失效。因此 pf 分两态，锚点与加载路径不变：
+
+| 态 | 物理口末尾规则 | 装载点 |
+| --- | --- | --- |
+| 连接态 | `pass out quick on {phys} all`（其余规则与顺序不变，特定放行行保留） | connect 钩子（与现行装载点相同） |
+| 封堵态 | `block drop out quick on {phys} all`（现行文本，不变） | 钩子后掉线（childExited 的 hookFired 分支），重连前保持封堵 |
+| 手动断开 | 卸载（不变） | finishManualStop（不变） |
+
+pf-state 持久化：每次装载写 supportDir/pf-state.json（0600，含 tunnelIf/gatewayIps/physicalIf/allowNetworks），手动卸载时删除。daemon 启动时若文件存在则重装封堵态：Helper 崩溃重启默认故障关闭；隧道若仍存活（孤儿 openconnect），直连流降级走 VPN 直至下次重连——安全方向。
+
+边界（明说，不藏）：连接态放行物理口出向，意味着本地应用若主动绑定物理口可绕隧道。本客户端的威胁模型是“掉线意外泄漏”而非“本地恶意应用主动绕过”，该窗口不在防范范围；掉线检测到封堵重装之间，vpnc-script 的路由持有（不拆路由）仍是第一道黑洞。
+
+### 17.6 验证矩阵（Phase 2）
+
+| 项 | runner 可验 | 只能 Mac 验 |
+| --- | --- | --- |
+| 编译 + 链接（新 Proxy 文件、PumpCore、PumpTest 靶） | 是（xcodebuild 既有步骤 + PumpTest 靶显式构建） | 否 |
+| 中继核：字节双向、半关闭排空、写错双向关闭 | 是（PumpTest harness，真实 loopback socket） | 否 |
+| 物理口选择纯函数（过滤、en0 优先、多口/零口） | 是（PumpTest  canned 列表） | 否 |
+| IP_BOUND_IF/IPV6_BOUND_IF 实测（setsockopt 成功） | 是（PumpTest，lo0 索引） | 否 |
+| pf 两态文本（连接态末尾 pass、封堵态末尾 block、默认仍为封堵） | 是（Rust 单测 + generate-pf CI 既有断言） | 否 |
+| 隧道 up 时直连流真实走物理口、掉线时封堵重装时序 | 否 | 是 |
+| Provider 与 Helper 的口一致性（多宿主）、IPv6/UDP 直连流实跑、SeaTalk 不受影响 | 否 | 是 |
+| Safari 排除受限、系统 DNS 走 VPN、仅新连接生效 | 否（既有限制，见 §4.3） | 是（行为与 Phase 1 结论一致） |
+
+Phase 2 的完成标准是左列全绿；右列仍挂起，不假装已验。
+
+### 17.7 文件清单
+
+- Sources/PumpCore/RelayCore.swift（端点协议 + 双向中继 + fd 适配）、InterfaceSelect.swift（纯选择函数 + getifaddrs 枚举）。
+- Sources/Proxy/FlowPump.swift（NE TCP/UDP 适配 + 绑定 socket 创建）、TransparentProxyProvider.swift（handleNewFlow 按 17.1、startProxy 从 App Groups 读 profile/rules、stopProxy 取消全部泵）。
+- core/src/pf.rs（PfInput 加 allow_direct_egress）、core/src/ffi.rs（ac_pf_generate 加参）、Sources/Helper/PfAnchor.swift（透传）、HelperMain.swift（generate-pf 加 --connected）、CLIOrchestrator.swift（连接态/封堵态切换 + pf-state 持久化）。
+- Sources/PumpTest/main.swift（工具靶）+ project.yml（AlwaysConnectPumpTest 靶）+ CI macOS 步骤（构建并运行 harness）。
