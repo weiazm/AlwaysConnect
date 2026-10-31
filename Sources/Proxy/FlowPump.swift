@@ -22,15 +22,17 @@ enum BoundSocket {
     /// Connects to host:port through interface ifIndex. Returns a
     /// non-blocking connected fd, or nil when every resolved address
     /// failed (bind failure included). The caller owns the fd.
+    /// The port passes through to getaddrinfo as the service string
+    /// (NWHostEndpoint.port is a String in this SDK, e.g. "443").
     static func connect(
-        host: String, port: UInt16, ifIndex: UInt32, socktype: Int32
+        host: String, port: String, ifIndex: UInt32, socktype: Int32
     ) -> Int32? {
         var hints = addrinfo()
         hints.ai_family = AF_UNSPEC
         hints.ai_socktype = socktype
         var res: UnsafeMutablePointer<addrinfo>?
         let status = host.withCString { h in
-            String(port).withCString { p in
+            port.withCString { p in
                 getaddrinfo(h, p, &hints, &res)
             }
         }
@@ -86,7 +88,7 @@ final class TCPFlowEndpoint: PumpEndpoint {
             completion(nil)
             return
         }
-        flow.writeData(data, completionHandler: completion)
+        flow.writeData(data, withCompletionHandler: completion)
     }
 
     func closeRead() { flow.closeReadWithError(nil) }
@@ -130,11 +132,11 @@ final class TCPFlowPump: FlowPumpCancellable {
     }
 
     /// False only for a synchronously unusable endpoint (not a host
-    /// endpoint, empty hostname, zero port): the caller then returns
+    /// endpoint, empty hostname, empty port): the caller then returns
     /// false from handleNewFlow and the flow goes via VPN.
     func start() -> Bool {
         guard let hostEndpoint = flow.remoteEndpoint as? NWHostEndpoint,
-              !hostEndpoint.hostname.isEmpty, hostEndpoint.port != 0 else {
+              !hostEndpoint.hostname.isEmpty, !hostEndpoint.port.isEmpty else {
             return false
         }
         let host = hostEndpoint.hostname
@@ -305,7 +307,7 @@ final class UDPFlowPump: FlowPumpCancellable {
         let key = endpointKey(endpoint)
         if sockets[key] == nil {
             guard let host = endpoint as? NWHostEndpoint,
-                  !host.hostname.isEmpty, host.port != 0,
+                  !host.hostname.isEmpty, !host.port.isEmpty,
                   let fd = BoundSocket.connect(
                     host: host.hostname, port: host.port,
                     ifIndex: ifIndex, socktype: SOCK_DGRAM) else {
