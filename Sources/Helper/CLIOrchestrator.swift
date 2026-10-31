@@ -183,6 +183,18 @@ final class CLIOrchestrator {
         process.arguments = args
         var env = ProcessInfo.processInfo.environment
         env.removeValue(forKey: "ALWAYSCONNECT_MANUAL_DISCONNECT")
+        // The script's disconnect branch reads a FILE, not an env
+        // value: stop() runs after spawn, so a value set at stop
+        // time could never reach the already-running child (its
+        // environment is frozen at launch) — that was the Phase 1
+        // flag bug. Spawn passes only the flag file's path; stop()
+        // creates the file before terminating the child, and the
+        // script tests its existence. A stale file left by a crashed
+        // earlier session is removed here, so an unexpected drop in
+        // a fresh session can never read a leftover manual flag and
+        // restore the local network (fail-open).
+        env["ALWAYSCONNECT_MANUAL_FLAG_PATH"] = manualFlagPath().path
+        removeManualFlag()
         if config.noRoutes {
             env["ALWAYSCONNECT_NO_ROUTES"] = "1"
         }
@@ -611,14 +623,29 @@ final class CLIOrchestrator {
         }
     }
 
+    /// The manual-disconnect flag file: the path the script was
+    /// given at spawn time (see spawnNext). Single source of truth
+    /// for install, spawn-time stale cleanup, and manual-stop
+    /// cleanup, so the three can never drift apart again.
+    private func manualFlagPath() -> URL {
+        supportDirURL().appendingPathComponent("manual-disconnect")
+    }
+
+    private func removeManualFlag() {
+        // Prefer the recorded install path when present; the
+        // deterministic path covers the spawn-time stale cleanup,
+        // where no install happened in this process.
+        try? FileManager.default.removeItem(at: manualFlagURL ?? manualFlagPath())
+        manualFlagURL = nil
+    }
+
     private func installManualFlag() {
-        let dir = config.supportDir
-            ?? CookieStore.defaultFileURL.deletingLastPathComponent()
+        let dir = supportDirURL()
         do {
             try FileManager.default.createDirectory(
                 at: dir, withIntermediateDirectories: true,
                 attributes: [.posixPermissions: 0o700])
-            let url = dir.appendingPathComponent("manual-disconnect")
+            let url = manualFlagPath()
             FileManager.default.createFile(atPath: url.path, contents: nil,
                                            attributes: [.posixPermissions: 0o600])
             manualFlagURL = url
@@ -640,10 +667,7 @@ final class CLIOrchestrator {
             fputs("CLIOrchestrator: pf unload failed (best effort)\n", stderr)
         }
         clearPfState()
-        if let url = manualFlagURL {
-            try? FileManager.default.removeItem(at: url)
-            manualFlagURL = nil
-        }
+        removeManualFlag()
         finishTerminal(.stoppedManual, detail: "manual disconnect")
     }
 

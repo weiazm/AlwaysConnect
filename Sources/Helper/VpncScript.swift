@@ -12,8 +12,14 @@ import Foundation
 /// - connect emits `AC_HOOK connect tun=<if> gateway=<ip>` on stdout
 ///   so the engine (and only the engine) learns the tunnel is up;
 /// - disconnect NEVER tears anything down unless the engine marked
-///   this stop as manual (ALWAYSCONNECT_MANUAL_DISCONNECT=1). An
-///   unexpected drop leaves routes and pf in place: fail closed.
+///   this stop as manual: the engine passes the flag file's path in
+///   the child's environment at spawn time
+///   (ALWAYSCONNECT_MANUAL_FLAG_PATH) and creates that file before
+///   terminating the child on a manual stop; the script tests the
+///   file's existence. A value set after spawn could never reach
+///   the script (its environment is frozen at launch), so no env
+///   VALUE is ever consulted here. An unexpected drop leaves routes
+///   and pf in place: fail closed.
 ///
 /// Mac-only, UNVERIFIED until the Mac proof run: the connect-path
 /// `route`/`scutil` commands below. They follow the stock vpnc-script
@@ -28,7 +34,7 @@ enum VpncScript {
     #!/bin/sh
     # AlwaysConnect vpnc-script. See DESIGN.md §16.4.
     # $1 = reason. Env: TUNDEV, VPNGATEWAY, INTERNAL_IP4_ADDRESS,
-    # INTERNAL_IP4_DNS, ALWAYSCONNECT_MANUAL_DISCONNECT,
+    # INTERNAL_IP4_DNS, ALWAYSCONNECT_MANUAL_FLAG_PATH,
     # ALWAYSCONNECT_NO_ROUTES.
     log() { echo "AC-SCRIPT [$1] $2" >&2; }
     hook() { echo "AC_HOOK $*"; }
@@ -52,7 +58,7 @@ enum VpncScript {
         exit 0
         ;;
       disconnect)
-        if [ "$ALWAYSCONNECT_MANUAL_DISCONNECT" = "1" ]; then
+        if [ -n "$ALWAYSCONNECT_MANUAL_FLAG_PATH" ] && [ -f "$ALWAYSCONNECT_MANUAL_FLAG_PATH" ]; then
           # Only a user-confirmed manual disconnect restores the
           # local network. Everything else keeps holding the line.
           if [ -z "$ALWAYSCONNECT_NO_ROUTES" ]; then

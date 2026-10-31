@@ -174,19 +174,13 @@ jobs:
           "$HELPER" dump-script > "$SCRIPT"
           chmod +x "$SCRIPT"
           head -1 "$SCRIPT" | grep -q '#!/bin/sh'
-          echo "HELPER=$HELPER"
-          grep -c 'MANUAL_FLAG_PATH' Sources/Helper/VpncScript.swift || true
-          grep -c 'MANUAL_FLAG_PATH' "$SCRIPT" || true
-          sed -n '/disconnect)/,/attempt-reconnect/p' "$SCRIPT"
           export TUNDEV=utun9 VPNGATEWAY=10.0.0.1 ALWAYSCONNECT_NO_ROUTES=1
           OUT=$(env -u ALWAYSCONNECT_MANUAL_FLAG_PATH "$SCRIPT" disconnect)
           echo "$OUT" | grep -q 'AC_HOOK disconnect-held'
           OUT=$(ALWAYSCONNECT_MANUAL_FLAG_PATH=/tmp/ac-manual-flag-missing "$SCRIPT" disconnect)
           echo "$OUT" | grep -q 'AC_HOOK disconnect-held'
           touch /tmp/ac-manual-flag-present
-          ls -l /tmp/ac-manual-flag-present
-          OUT=$(ALWAYSCONNECT_MANUAL_FLAG_PATH=/tmp/ac-manual-flag-present sh -x "$SCRIPT" disconnect 2>&1)
-          echo "$OUT"
+          OUT=$(ALWAYSCONNECT_MANUAL_FLAG_PATH=/tmp/ac-manual-flag-present "$SCRIPT" disconnect)
           echo "$OUT" | grep -q 'AC_HOOK disconnect-manual'
           rm -f /tmp/ac-manual-flag-present
           OUT=$("$SCRIPT" connect)
