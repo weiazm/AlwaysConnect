@@ -593,19 +593,30 @@ final class CLIOrchestrator {
     /// appears in prompts (it goes over stdin), but --dump-http-traffic
     /// prints the auth request body, so <password> content is masked
     /// alongside the cookie headers.
+    ///
+    /// Termination guarantee (measured 2026-10-31): the key itself
+    /// STAYS in the string after masking, so each search must resume
+    /// AFTER the masked value. The original while loop re-matched the
+    /// same key forever on any line containing webvpn= — freezing the
+    /// engine queue at the first Set-Cookie line, with the child
+    /// proceeding alone and no further STATE ever emitted.
     static func redact(_ line: String) -> String {
         var out = line
         for key in ["webvpncontext=", "webvpn="] {
-            while let range = out.range(of: key) {
+            var searchFrom = out.startIndex
+            while let range = out.range(of: key, range: searchFrom..<out.endIndex) {
                 let rest = out[range.upperBound...]
                 let end = rest.firstIndex(where: { $0 == ";" || $0 == " " || $0 == "\t" })
                     ?? rest.endIndex
                 out.replaceSubrange(range.upperBound..<end, with: "***")
+                searchFrom = out.index(range.upperBound, offsetBy: 3)
             }
         }
-        while let open = out.range(of: "<password>"),
+        var searchFrom = out.startIndex
+        while let open = out.range(of: "<password>", range: searchFrom..<out.endIndex),
               let close = out.range(of: "</password>", range: open.upperBound..<out.endIndex) {
             out.replaceSubrange(open.upperBound..<close.lowerBound, with: "***")
+            searchFrom = out.index(open.upperBound, offsetBy: 3)
         }
         return out
     }
