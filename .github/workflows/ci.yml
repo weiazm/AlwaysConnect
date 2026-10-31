@@ -73,8 +73,15 @@ jobs:
           HELPER=$(find ~/Library/Developer/Xcode/DerivedData/AlwaysConnect-*/Build/Products/Debug -maxdepth 1 -name AlwaysConnectHelper -type f | head -1)
           test -n "$HELPER"
           rm -rf /tmp/ac-engine-test && mkdir -p /tmp/ac-engine-test
+          # run-once exits 3 on attempts-exhausted BY DESIGN; the step
+          # shell runs with set -e, so capture without aborting and
+          # assert the exit code explicitly.
+          set +e
           OUT=$(printf 'x\n' | "$HELPER" run-once --server https://127.0.0.1:9 --user nobody --max-attempts 2 --no-routes --cookie-store /tmp/ac-engine-test/session.json --support-dir /tmp/ac-engine-test 2>&1)
+          RUN_EXIT=$?
+          set -e
           echo "$OUT"
+          test "$RUN_EXIT" -eq 3
           echo "$OUT" | grep -q "STATE authenticating"
           echo "$OUT" | grep -q "TERMINAL attempts-exhausted"
       - name: Run Helper engine test (ocserv auth + cookie reuse)
@@ -91,8 +98,13 @@ jobs:
           HELPER=$(find ~/Library/Developer/Xcode/DerivedData/AlwaysConnect-*/Build/Products/Debug -maxdepth 1 -name AlwaysConnectHelper -type f | head -1)
           test -n "$HELPER"
           rm -rf /tmp/ac-engine-test && mkdir -p /tmp/ac-engine-test
+          # See the no-server step: run-once exits 3 by design.
+          set +e
           OUT=$(printf 'testpass\n' | "$HELPER" run-once --server https://127.0.0.1:4443 --user testuser --cafile /tmp/ocserv-test/ca-cert.pem --max-attempts 3 --no-routes --cookie-store /tmp/ac-engine-test/session.json --support-dir /tmp/ac-engine-test 2>&1)
+          RUN_EXIT=$?
+          set -e
           echo "$OUT"
+          test "$RUN_EXIT" -eq 3
           echo "$OUT" | grep -q "credential password"
           echo "$OUT" | grep -q "credential cookie"
           echo "$OUT" | grep -q "TERMINAL attempts-exhausted"
