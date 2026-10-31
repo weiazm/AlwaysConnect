@@ -13,9 +13,16 @@ import Foundation
 /// Credential flow:
 /// - Prefer a usable stored cookie (--cookie-on-stdin); else password
 ///   (--passwd-on-stdin). The password lives only in memory.
-/// - The tunnel cookie is captured from the child's verbose stdout
-///   (`Set-Cookie: webvpn=`) and persisted via CookieStore (0600).
-///   A cookie-fed run that exits without a connect hook discards the
+/// - The tunnel cookie is captured from the child's
+///   --dump-http-traffic output: the Cookie REQUEST header on the
+///   CSTP CONNECT (`Cookie: webvpn=<value>`). This channel exists
+///   because openconnect itself elides Set-Cookie VALUES in every
+///   output mode (measured 2026-10-31: verbose and dump both print
+///   `Set-Cookie: webvpn=<elided>`), so Set-Cookie parsing can only
+///   ever capture the literal string "<elided>" — the engine never
+///   parses Set-Cookie, and defensively discards any "<elided>"
+///   value it sees. Captured cookies persist via CookieStore (0600).
+/// - A cookie-fed run that exits without a connect hook discards the
 ///   record and falls back to password once.
 /// - A password-fed run that prints "Login failed." is an
 ///   AuthFailure: the engine closes stdin (the child then exits on
@@ -27,8 +34,9 @@ import Foundation
 /// disconnect path restores the local network). Every other exit
 /// leaves them in place.
 ///
-/// The child process's stdout/stderr are NEVER logged raw: they can
-/// carry the tunnel cookie. All stored/printed lines pass redact().
+/// The child process's stdout/stderr are NEVER logged raw: dump
+/// output carries the tunnel cookie AND the password XML. All
+/// stored/printed lines pass redact().
 final class CLIOrchestrator {
     struct Config {
         var server: String
@@ -78,7 +86,8 @@ final class CLIOrchestrator {
     private var stderrBuffer = ""
     private var redactedTail: [String] = []
 
-    /// Substrings that mark a push-approval wait in --verbose output.
+    /// Substrings that mark a push-approval wait in --dump-http-traffic
+    /// output.
     /// EMPTY on purpose: real-gateway output shapes are a Phase 1
     ///待验证项 (DESIGN.md §16.5). Guessing patterns here would fake
     /// the AwaitingApproval state; the detector stays inactive until
@@ -158,7 +167,7 @@ final class CLIOrchestrator {
             credentialText = config.password
             fedCredential = .password
         }
-        args += ["--script=\(config.scriptPath)", "--verbose"]
+        args += ["--script=\(config.scriptPath)", "--dump-http-traffic"]
 
         let process = Process()
         process.executableURL = URL(fileURLWithPath: openConnectExecutable())
@@ -294,7 +303,7 @@ final class CLIOrchestrator {
             handleHook(String(line.dropFirst("AC_HOOK ".count)))
             return
         }
-        if isStdout, let cookie = captureCookie(from: line) {
+        if let cookie = captureCookie(from: line) {
             config.cookieStore.save(cookie: cookie, gateway: config.server)
             return
         }
@@ -318,12 +327,18 @@ final class CLIOrchestrator {
     }
 
     private func captureCookie(from line: String) -> String? {
-        // Exact prefix: "webvpncontext=" must NOT match.
-        guard let range = line.range(of: "Set-Cookie: webvpn=") else { return nil }
+        // The Cookie REQUEST header on the CSTP CONNECT carries the
+        // real value; Set-Cookie response values are elided by
+        // openconnect itself and must never be parsed. Exact prefix:
+        // "webvpncontext=" must NOT match. "<elided>" is discarded
+        // defensively; later lines overwrite earlier ones, so the
+        // stored value is always the freshest.
+        guard let range = line.range(of: "Cookie: webvpn=") else { return nil }
         let rest = line[range.upperBound...]
         let value = rest.split(separator: ";", maxSplits: 1).first?
             .trimmingCharacters(in: .whitespaces) ?? ""
-        return value.isEmpty ? nil : value
+        guard !value.isEmpty, value != "<elided>" else { return nil }
+        return value
     }
 
     private func handleHook(_ payload: String) {
@@ -545,9 +560,11 @@ final class CLIOrchestrator {
 
     var redactedLogTail: [String] { redactedTail }
 
-    /// Masks session tokens before any line is stored, printed, or
-    /// put into diagnostics. The password never appears in child
-    /// output (it goes over stdin), but cookies do.
+    /// Masks session tokens AND the password XML before any line is
+    /// stored, printed, or put into diagnostics. The password never
+    /// appears in prompts (it goes over stdin), but --dump-http-traffic
+    /// prints the auth request body, so <password> content is masked
+    /// alongside the cookie headers.
     static func redact(_ line: String) -> String {
         var out = line
         for key in ["webvpncontext=", "webvpn="] {
@@ -557,6 +574,10 @@ final class CLIOrchestrator {
                     ?? rest.endIndex
                 out.replaceSubrange(range.upperBound..<end, with: "***")
             }
+        }
+        while let open = out.range(of: "<password>"),
+              let close = out.range(of: "</password>", range: open.upperBound..<out.endIndex) {
+            out.replaceSubrange(open.upperBound..<close.lowerBound, with: "***")
         }
         return out
     }

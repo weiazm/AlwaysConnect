@@ -291,7 +291,7 @@
 
 - App 与隧道的关系从 NETunnelProviderManager 改为 XPC：App 读 Keychain，启动时经 XPC 把凭据发给 Helper（Helper 只放内存，不落盘）；Helper 用 --passwd-on-stdin（新认证）或 --cookie-on-stdin（会话恢复）起 openconnect，--authgroup 传 Group。
 - 失败关闭的第一道改由自定义 vpnc-script 承担：脚本的断开路径一律不拆路由、不清 pf（只记日志），只在 Helper 确认"用户手动断开"后才由 Helper 显式恢复本地网络；意外掉线时路由与 pf 原地保留，openconnect 自身重连 + Helper 的退避双保险。
-- 等批准态的感知从"库回调通知"变为"CLI 输出启发式"：Helper 从 openconnect 的 --verbose 输出里识别 push 等待标记，真实网关的实际输出形状是 Phase 1 待验证项，验出来之前不承诺精确的等批准文案。
+- 等批准态的感知从"库回调通知"变为"CLI 输出启发式"：Helper 从 openconnect 的 --dump-http-traffic 输出里识别 push 等待标记，真实网关的实际输出形状是 Phase 1 待验证项，验出来之前不承诺精确的等批准文案。
 - 分发仍需付费开发者账号（Proxy 的 NE entitlement + Helper 的 SMAppService + 公证），包隧道 entitlement 省掉了，但 binding 约束没变。
 - openconnect 是 GPL：个人自用无碍，对外分发需处理源码义务。
 
@@ -332,10 +332,10 @@ Helper → App（状态订阅回调）：
 
 Helper 用 Foundation Process 拉起 openconnect，参数只给必需项，不堆 flags：
 
-- 全新认证：`openconnect --server=<server> --authgroup=<group> --user=<user> --passwd-on-stdin --script=<vpnc-script> --verbose`
+- 全新认证：`openconnect --server=<server> --authgroup=<group> --user=<user> --passwd-on-stdin --script=<vpnc-script> --dump-http-traffic`
 - 会话恢复：把 `--passwd-on-stdin` 换成 `--cookie-on-stdin`，其余相同。
 - 凭据经子进程 stdin 一次性写入，管道在进程存活期间保持打开，停止时关闭；Helper 不把凭据写进命令行参数（ps 可见）或日志。
-- `--verbose` 只要一个目的：等批准态的输出启发式（16.5）；除此之外不依赖 verbose 文案做决策。
+- `--dump-http-traffic` 有两个目的：等批准态的输出启发式（16.5）与隧道 Cookie 捕获（16.3.2）；它的输出是 verbose 进度的超集。除此之外不依赖输出文案做决策。
 
 ### 16.3 退出码与重连决策：先定分类，码值以实测为准
 
@@ -362,9 +362,13 @@ Cookie 恢复失败不直接判 AuthFailure：先回落到密码全新认证一�
 
 教训：exit 2 + "Cookie was rejected" 在沙箱里是 tun 失败的表象，不是认证被拒；把退出码或该文案直接映射成"密码错"会在 Mac 上误杀正常会话。分类的第一信号永远是脚本钩子（connect 到达与否）与喂入的凭据种类，stderr 文案只作辅助；"Login failed." 是表单阶段的实测信号，真实网关的文案可能不同，届时以实测补表。
 
-### 16.3.2 隧道 Cookie 的捕获方式
+### 16.3.2 隧道 Cookie 的捕获方式（已更正：Set-Cookie 抓不到）
 
-CLI 进程不向调用方返回 Cookie；Helper 从子进程的 `--verbose` stdout 里解析 `Set-Cookie: webvpn=` 行捕获（前缀必须精确匹配，`webvpncontext=` 不算）。捕获到的 Cookie 立即写入 CookieStore（0600）；子进程的 stdout/stderr 绝不原样进日志或诊断包，含 `webvpn=` / `webvpncontext=` 的行一律掩码后再存。
+CLI 进程不向调用方返回 Cookie；2026-10-31 实测证明，openconnect 自身会在所有输出模式里把 Set-Cookie 的值写成字面量 `<elided>`（verbose 与 --dump-http-traffic 均如此，哈希核对确认），所以解析 Set-Cookie 只能抓到 "<elided>"——早期设计稿里写的那条路是错的，现已废弃。
+
+唯一真实的捕获通道是 --dump-http-traffic 输出里 CSTP CONNECT 请求头：`Cookie: webvpn=<真值>`（同法哈希核对：mock 网关发出的 mockcookie123 在该行原样出现）。引擎只解析该行，前缀必须精确匹配（`webvpncontext=` 不算），值为 "<elided>" 或空时丢弃，后出现的行覆盖先前的行，存下的永远是最新值；捕获后立即写入 CookieStore（0600）。
+
+代价：dump 输出同时印出认证请求的 XML（含 <password> 明文），因此引擎的 redact 规则除掩码 `webvpn=` / `webvpncontext=` 外，还掩码 <password>…</password> 内容；子进程输出绝不原样进日志或诊断包。
 
 ### 16.4 vpnc-script：失败关闭第一道
 
@@ -372,13 +376,13 @@ Helper 自带自定义 vpnc-script（sh），openconnect 以 `$reason` 区分调
 
 - `connect`：按 Helper 写入的配置设路由与 DNS；成功后向 stdout 写钩子行 `AC_HOOK connect tun=<if> gateway=<ip>`，Helper 据此把状态推为 Connected 并装载 pf。路由/DNS 命令失败时脚本以非零退出且不发钩子，引擎永不把"路由没立起来"报成已连接。
 - `disconnect`：一律只记日志，不拆路由、不清 pf；唯一的例外是 Helper 在手动断开前先落一个标志文件，脚本见标志才执行恢复路径。意外掉线时路由与 pf 原地保留，openconnect 自身重连 + Helper 退避双保险。
-- 脚本与 openconnect 共享 stdout/stderr：钩子行与 `--verbose` 输出走同一流，Helper 按行解析；钩子行格式固定为 `AC_HOOK <事件>`，事件名只增不改名。
+- 脚本与 openconnect 共享 stdout/stderr：钩子行与 `--dump-http-traffic` 输出走同一流，Helper 按行解析；钩子行格式固定为 `AC_HOOK <事件>`，事件名只增不改名。
 
 脚本分支逻辑已在 Linux 上验过（取 Swift 内嵌文本、按 Swift 多行字符串缩进规则还原后逐分支执行）：disconnect 无标志 → `disconnect-held` 且不跑路由命令；disconnect 有手动标志 → `disconnect-manual`；connect（NO_ROUTES 测试模式）→ `connect tun=… gateway=…`；attempt-reconnect / pre-init / 未知 reason → exit 0。Mac 专属的 `route`/`scutil` 命令本身未在 Mac 上跑过，仍是 Mac proof 待验证项。
 
 ### 16.5 等批准态启发式（待验证项，不承诺精确文案）
 
-Helper 从 `--verbose` 输出里识别 push 等待标记，命中后状态推为 AwaitingApproval 并推通知；120s 内无进展按 ApprovalTimeout 再发起。真实网关的实际输出形状是 Phase 1 待验证项：ocserv 只能验"启发式框架能跑"，验不出真实网关的标记文本；在拿到真实网关输出之前，文档与面板文案不承诺"识别到某某字样"，只承诺"等批准时面板与通知如实显示等待态"。
+Helper 从 `--dump-http-traffic` 输出里识别 push 等待标记，命中后状态推为 AwaitingApproval 并推通知；120s 内无进展按 ApprovalTimeout 再发起。真实网关的实际输出形状是 Phase 1 待验证项：ocserv 只能验"启发式框架能跑"，验不出真实网关的标记文本；在拿到真实网关输出之前，文档与面板文案不承诺"识别到某某字样"，只承诺"等批准时面板与通知如实显示等待态"。
 
 ### 16.6 pf 生命周期
 

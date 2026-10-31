@@ -84,34 +84,50 @@ jobs:
           test "$RUN_EXIT" -eq 3
           echo "$OUT" | grep -q "STATE authenticating"
           echo "$OUT" | grep -q "TERMINAL attempts-exhausted"
-      - name: Run Helper engine test (ocserv auth + cookie reuse)
-        # Full loop short of a real tunnel: password auth captures a
-        # cookie, the tun failure (the runner user cannot create utun)
-        # classifies Transient, and later attempts reuse the cookie.
+      - name: Run Helper engine test (mock gateway auth + cookie reuse)
+        # Full loop short of a real tunnel: the mock AnyConnect server
+        # replays ocserv's real auth-form XML, issues a fixed test
+        # cookie, and answers CSTP CONNECT with 401. Password auth
+        # must capture the cookie, the tun failure (the runner user
+        # cannot create utun) classifies Transient, and later attempts
+        # must reuse the cookie. No brew ocserv exists for macOS, so
+        # the mock (stdlib Python only) is the gateway here.
         # --no-routes keeps the runner's routing untouched; pf loads
         # only on a connect hook, which cannot fire without a tun.
+        # The mock and the test live in one step so no background
+        # process has to survive across steps.
         timeout-minutes: 10
         run: |
-          brew install ocserv
-          sudo core/scripts/ocserv-test.sh start
-          sudo chmod 644 /tmp/ocserv-test/ca-cert.pem
+          brew install openconnect
+          mkdir -p /tmp/ac-mock
+          openssl req -x509 -newkey rsa:2048 -keyout /tmp/ac-mock/ca-key.pem -out /tmp/ac-mock/ca-cert.pem -days 2 -nodes -subj "/CN=Mock Test CA" 2>/dev/null
+          openssl req -newkey rsa:2048 -keyout /tmp/ac-mock/server-key.pem -out /tmp/ac-mock/server.csr -nodes -subj "/CN=localhost" 2>/dev/null
+          printf "subjectAltName=IP:127.0.0.1,DNS:localhost" > /tmp/ac-mock/server.ext
+          openssl x509 -req -in /tmp/ac-mock/server.csr -CA /tmp/ac-mock/ca-cert.pem -CAkey /tmp/ac-mock/ca-key.pem -CAcreateserial -out /tmp/ac-mock/server-cert.pem -days 2 -extfile /tmp/ac-mock/server.ext 2>/dev/null
+          nohup python3 core/scripts/mock-anyconnect.py 4444 /tmp/ac-mock/server-cert.pem /tmp/ac-mock/server-key.pem /tmp/ac-mock/ca-cert.pem >/tmp/ac-mock/mock.log 2>&1 &
+          echo $! > /tmp/ac-mock/mock.pid
+          for _ in $(seq 1 20); do
+            if python3 -c "import socket,sys; s=socket.socket(); s.settimeout(0.5); sys.exit(0 if s.connect_ex(('127.0.0.1',4444))==0 else 1)" 2>/dev/null; then
+              break
+            fi
+            sleep 0.5
+          done
           HELPER=$(find ~/Library/Developer/Xcode/DerivedData/AlwaysConnect-*/Build/Products/Debug -maxdepth 1 -name AlwaysConnectHelper -type f | head -1)
           test -n "$HELPER"
           rm -rf /tmp/ac-engine-test && mkdir -p /tmp/ac-engine-test
           # See the no-server step: run-once exits 3 by design.
           set +e
-          OUT=$(printf 'testpass\n' | "$HELPER" run-once --server https://127.0.0.1:4443 --user testuser --cafile /tmp/ocserv-test/ca-cert.pem --max-attempts 3 --no-routes --cookie-store /tmp/ac-engine-test/session.json --support-dir /tmp/ac-engine-test 2>&1)
+          OUT=$(printf 'testpass\n' | "$HELPER" run-once --server https://127.0.0.1:4444 --user testuser --cafile /tmp/ac-mock/ca-cert.pem --max-attempts 3 --no-routes --cookie-store /tmp/ac-engine-test/session.json --support-dir /tmp/ac-engine-test 2>&1)
           RUN_EXIT=$?
           set -e
+          kill "$(cat /tmp/ac-mock/mock.pid)" || true
+          cat /tmp/ac-mock/mock.log
           echo "$OUT"
           test "$RUN_EXIT" -eq 3
           echo "$OUT" | grep -q "credential password"
           echo "$OUT" | grep -q "credential cookie"
           echo "$OUT" | grep -q "TERMINAL attempts-exhausted"
-          test -s /tmp/ac-engine-test/session.json
-      - name: Stop macOS test gateway
-        if: always()
-        run: sudo core/scripts/ocserv-test.sh stop || true
+          grep -q mockcookie123 /tmp/ac-engine-test/session.json
       - name: Run Helper (pf anchor smoke check)
         # The scheme also builds AlwaysConnectHelper (a plain tool, no
         # entitlements needed to run). Verify generation output, and
