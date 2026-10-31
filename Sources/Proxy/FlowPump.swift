@@ -88,7 +88,7 @@ final class TCPFlowEndpoint: PumpEndpoint {
             completion(nil)
             return
         }
-        flow.writeData(data, withCompletionHandler: completion)
+        flow.write(data, withCompletionHandler: completion)
     }
 
     func closeRead() { flow.closeReadWithError(nil) }
