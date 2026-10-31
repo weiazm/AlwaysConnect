@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import Security
 
@@ -9,12 +10,15 @@ import Security
 /// connect call and live only in the engine's memory.
 ///
 /// Client validation: the connecting process must be signed with the
-/// same team identifier as the Helper itself. In unsigned dev builds
-/// both sides report no team identifier, which is accepted with a log
-/// line; once signed with a real team ID, only same-team clients pass.
-/// A mismatched client is refused at the listener, before any method
-/// runs — an arbitrary local process cannot drive the root daemon's
-/// pf rules or tunnel.
+/// same team identifier as the Helper itself. The team is read off
+/// the client's executable (via its pid) and off the Helper's own
+/// code, both as static codes — NSXPCConnection exposes no audit
+/// token to Swift, so the pid path is the one that compiles. In
+/// unsigned dev builds both sides report no team identifier, which is
+/// accepted with a log line; once signed with a real team ID, only
+/// same-team clients pass. A mismatched client is refused at the
+/// listener, before any method runs — an arbitrary local process
+/// cannot drive the root daemon's pf rules or tunnel.
 final class HelperDaemon: NSObject, NSXPCListenerDelegate {
     private let listener: NSXPCListener
     private var sessions: [HelperSession] = []
@@ -58,29 +62,35 @@ final class HelperDaemon: NSObject, NSXPCListenerDelegate {
 
     // MARK: - Team validation
 
-    private static func teamIdentifier(for connection: NSXPCConnection) -> String? {
-        var token = connection.auditToken
-        let tokenData = withUnsafeBytes(of: &token) { Data($0) }
-        var guest: SecCode?
-        let attributes = [kSecGuestAttributeAudit as String: tokenData] as CFDictionary
-        guard SecCodeCopyGuestWithAttributes(nil, attributes, [], &guest) == errSecSuccess,
-              let guest
-        else { return nil }
-        var info: CFDictionary?
-        guard SecCodeCopySigningInformation(guest, [], &info) == errSecSuccess,
-              let info
-        else { return nil }
-        return (info as NSDictionary)[kSecCodeInfoTeamIdentifier as String] as? String
-    }
-
-    private static func ownTeamIdentifier() -> String? {
-        var code: SecCode?
-        guard SecCodeCopySelf([], &code) == errSecSuccess, let code else { return nil }
+    private static func teamIdentifier(fromStaticCode code: SecStaticCode) -> String? {
         var info: CFDictionary?
         guard SecCodeCopySigningInformation(code, [], &info) == errSecSuccess,
               let info
         else { return nil }
         return (info as NSDictionary)[kSecCodeInfoTeamIdentifier as String] as? String
+    }
+
+    private static func teamIdentifier(for connection: NSXPCConnection) -> String? {
+        guard let app = NSRunningApplication(processIdentifier: connection.processIdentifier),
+              let url = app.executableURL
+        else { return nil }
+        var staticCode: SecStaticCode?
+        guard SecStaticCodeCreateWithPath(url as CFURL, [], &staticCode) == errSecSuccess,
+              let staticCode
+        else { return nil }
+        return teamIdentifier(fromStaticCode: staticCode)
+    }
+
+    private static func ownTeamIdentifier() -> String? {
+        var selfCode: SecCode?
+        guard SecCodeCopySelf([], &selfCode) == errSecSuccess,
+              let selfCode
+        else { return nil }
+        var staticCode: SecStaticCode?
+        guard SecCodeCopyStaticCode(selfCode, [], &staticCode) == errSecSuccess,
+              let staticCode
+        else { return nil }
+        return teamIdentifier(fromStaticCode: staticCode)
     }
 
     private static func clientTeamMatchesSelf(_ connection: NSXPCConnection) -> Bool {

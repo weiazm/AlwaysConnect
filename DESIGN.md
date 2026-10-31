@@ -414,7 +414,7 @@ Phase 1 的完成标准是左列全绿；右列仍挂起，不假装已验。
 - Helper → App：`statusChanged(state:detail:)` 单向推送，App 不轮询。
 - 状态码与 Rust 驱动一致（0–5）；凭据被拒不设第七态，以 terminal 回调的 error detail 呈现。
 
-Helper 侧（Sources/Helper/HelperDaemon.swift）：`daemon` 子命令起 NSXPCListener，accept 时校验客户端团队标识——须与 Helper 自身的团队标识一致；未签名的开发构建两侧均为 nil，放行并记日志；签名后只有同团队客户端能连，任意本地进程无法驱动 root 守护进程的 pf 与隧道。Helper 重启后 App 下一次用户操作或启动自动连接时重新发送凭据，不做静默无限重连。
+Helper 侧（Sources/Helper/HelperDaemon.swift）：`daemon` 子命令起 NSXPCListener，accept 时校验客户端团队标识——取客户端 pid 对应的可执行文件静态码签名信息中的团队标识，须与 Helper 自身的团队标识一致；未签名的开发构建两侧均为 nil，放行并记日志；签名后只有同团队客户端能连，任意本地进程无法驱动 root 守护进程的 pf 与隧道。Helper 重启后 App 下一次用户操作或启动自动连接时重新发送凭据，不做静默无限重连。
 
 App 侧（Sources/App/HelperClient.swift）：懒建连接，中断/失效时面板显示 Helper 未运行；面板（PanelAndSettings.swift）状态源已切到 HelperClient，开关 off 时先出内联确认行，确认后才断开；快捷入口四格待 Settings 页落地时再接（Phase 2）。
 
