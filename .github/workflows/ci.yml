@@ -115,17 +115,22 @@ jobs:
           HELPER=$(find ~/Library/Developer/Xcode/DerivedData/AlwaysConnect-*/Build/Products/Debug -maxdepth 1 -name AlwaysConnectHelper -type f | head -1)
           test -n "$HELPER"
           rm -rf /tmp/ac-engine-test && mkdir -p /tmp/ac-engine-test
-          # run-once runs in the background under a watchdog so that
-          # even if it hangs, the mock log and partial output are
-          # always printed (a plain command substitution would die
-          # with the step timeout and hide the evidence).
-          (printf 'testpass\n' | "$HELPER" run-once --server https://127.0.0.1:4444 --user testuser --cafile /tmp/ac-mock/ca-cert.pem --max-attempts 3 --no-routes --debug-child-output --cookie-store /tmp/ac-engine-test/session.json --support-dir /tmp/ac-engine-test > /tmp/ac-engine-test/out.txt 2>&1; echo $? > /tmp/ac-engine-test/exit.txt) &
+          # run-once runs as a plain background job (no subshell) so
+          # its exit code comes back via `wait` directly: the earlier
+          # subshell+exit.txt form lost exit.txt on the runner for an
+          # undetermined job-control reason (TERMINAL printed, file
+          # missing), and a lost exit code must never fail the test.
+          # A watchdog kills it after 120s so a hang still yields
+          # the mock log and partial output instead of a step timeout.
+          printf 'testpass\n' | "$HELPER" run-once --server https://127.0.0.1:4444 --user testuser --cafile /tmp/ac-mock/ca-cert.pem --max-attempts 3 --no-routes --debug-child-output --cookie-store /tmp/ac-engine-test/session.json --support-dir /tmp/ac-engine-test > /tmp/ac-engine-test/out.txt 2>&1 &
           RUN_PID=$!
-          for _ in $(seq 1 24); do
-            kill -0 "$RUN_PID" 2>/dev/null || break
-            sleep 5
-          done
-          kill "$RUN_PID" 2>/dev/null || true
+          ( sleep 120; kill "$RUN_PID" 2>/dev/null ) &
+          WATCH_PID=$!
+          set +e
+          wait "$RUN_PID"
+          RUN_EXIT=$?
+          set -e
+          kill "$WATCH_PID" 2>/dev/null || true
           kill "$(cat /tmp/ac-mock/mock.pid)" || true
           echo "--- mock requests ---"
           cat /tmp/ac-mock/mock.log
