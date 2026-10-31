@@ -44,7 +44,7 @@ server-cert = $DIR/server-cert.pem
 server-key = $DIR/server-key.pem
 ca-cert = $DIR/ca-cert.pem
 socket-file = $DIR/ocserv.sock
-device = vpns
+device = ${OCSERV_DEVICE:-vpns}
 ipv4-network = 10.77.0.0/24
 EOF
   if [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then
@@ -52,7 +52,9 @@ EOF
   else
     nohup ocserv -c "$DIR/ocserv.conf" --pid-file "$PIDFILE" >/tmp/ocserv-test/ocserv.log 2>&1 &
     for _ in $(seq 1 20); do
-      if ss -ltn 2>/dev/null | grep -q ":$PORT "; then
+      # Portable readiness probe (ss exists on Linux only; python3 is
+      # on both Linux and macOS runners).
+      if python3 -c "import socket,sys; s=socket.socket(); s.settimeout(0.5); sys.exit(0 if s.connect_ex(('127.0.0.1',$PORT))==0 else 1)" 2>/dev/null; then
         echo "ocserv up on 127.0.0.1:$PORT (pid $(cat "$PIDFILE" 2>/dev/null))"
         exit 0
       fi

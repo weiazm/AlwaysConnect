@@ -80,10 +80,28 @@ enum VpncScript {
     /// Writes the script to a Helper-owned file (0700 dir, 0700 file)
     /// and returns its path. The engine passes this path to openconnect
     /// via --script. `overridePath` (run-once tests) skips the install.
+    ///
+    /// Domain fallback: the root daemon writes to the local domain
+    /// (/Library/Application Support); a user-run Helper (run-once
+    /// tests, CI) falls back to the user domain when the local domain
+    /// is not writable, instead of failing the whole session.
     static func install(to directory: URL? = nil) throws -> String {
-        let dir = directory ?? FileManager.default.urls(
-            for: .applicationSupportDirectory, in: .localDomainMask)
+        if let directory {
+            return try installIn(directory)
+        }
+        let fm = FileManager.default
+        let local = fm.urls(for: .applicationSupportDirectory, in: .localDomainMask)
             .first!.appendingPathComponent("AlwaysConnect")
+        do {
+            return try installIn(local)
+        } catch {
+            let user = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask)
+                .first!.appendingPathComponent("AlwaysConnect")
+            return try installIn(user)
+        }
+    }
+
+    private static func installIn(_ dir: URL) throws -> String {
         try FileManager.default.createDirectory(
             at: dir, withIntermediateDirectories: true,
             attributes: [.posixPermissions: 0o700])

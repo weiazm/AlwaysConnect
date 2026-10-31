@@ -113,7 +113,7 @@ struct HelperMain {
     ///   AlwaysConnectHelper run-once --server <url> --user <name>
     ///       [--group <group>] [--phys <if>] [--allow <cidr,...>]
     ///       [--cookie-store <path>] [--support-dir <path>]
-    ///       [--openconnect <path>] [--script <path>]
+    ///       [--openconnect <path>] [--cafile <path>] [--script <path>]
     ///       [--max-attempts <n>] [--no-routes]
     ///   Password is read as one line from stdin (piped, not prompted).
     /// Exit codes: 0 manual stop (SIGINT/SIGTERM), 1 auth failure,
@@ -128,6 +128,7 @@ struct HelperMain {
         var cookieStorePath: String?
         var supportDirPath: String?
         var openconnectPath: String?
+        var cafile: String?
         var scriptPath: String?
         var maxAttempts: Int?
         var noRoutes = false
@@ -151,6 +152,7 @@ struct HelperMain {
             case "--cookie-store": cookieStorePath = value
             case "--support-dir": supportDirPath = value
             case "--openconnect": openconnectPath = value
+            case "--cafile": cafile = value
             case "--script": scriptPath = value
             case "--max-attempts": maxAttempts = Int(value)
             default:
@@ -193,6 +195,7 @@ struct HelperMain {
             username: user,
             password: password,
             openconnectPath: openconnectPath,
+            cafile: cafile,
             scriptPath: script,
             cookieStore: CookieStore(fileURL: storeURL),
             physicalIf: phys,
@@ -248,7 +251,7 @@ struct HelperMain {
     private static func usage() {
         fputs("Usage:\n", stderr)
         fputs("  AlwaysConnectHelper generate-pf --phys <if> --tun <if> --gateway <ip[,ip...]> [--allow <cidr[,cidr...]>]\n", stderr)
-        fputs("  AlwaysConnectHelper run-once --server <url> --user <name> [--group <group>] [--phys <if>] [--allow <cidr,...>] [--cookie-store <path>] [--support-dir <path>] [--openconnect <path>] [--script <path>] [--max-attempts <n>] [--no-routes]\n", stderr)
+        fputs("  AlwaysConnectHelper run-once --server <url> --user <name> [--group <group>] [--phys <if>] [--allow <cidr,...>] [--cookie-store <path>] [--support-dir <path>] [--openconnect <path>] [--cafile <path>] [--script <path>] [--max-attempts <n>] [--no-routes]\n", stderr)
         fputs("  AlwaysConnectHelper daemon\n", stderr)
     }
 }

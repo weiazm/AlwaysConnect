@@ -63,6 +63,43 @@ jobs:
           xcodebuild -project AlwaysConnect.xcodeproj
           -scheme AlwaysConnect -destination 'platform=macOS'
           build CODE_SIGNING_ALLOWED=NO
+      - name: Run Helper engine smoke test (no server)
+        # Exercises spawn + stdin feed + Transient classification +
+        # backoff + max-attempts, with no gateway and no tun device.
+        # No pf or routes are touched (no connect hook can fire).
+        timeout-minutes: 5
+        run: |
+          brew install openconnect
+          HELPER=$(find ~/Library/Developer/Xcode/DerivedData/AlwaysConnect-*/Build/Products/Debug -maxdepth 1 -name AlwaysConnectHelper -type f | head -1)
+          test -n "$HELPER"
+          rm -rf /tmp/ac-engine-test && mkdir -p /tmp/ac-engine-test
+          OUT=$(printf 'x\n' | "$HELPER" run-once --server https://127.0.0.1:9 --user nobody --max-attempts 2 --no-routes --cookie-store /tmp/ac-engine-test/session.json --support-dir /tmp/ac-engine-test 2>&1)
+          echo "$OUT"
+          echo "$OUT" | grep -q "STATE authenticating"
+          echo "$OUT" | grep -q "TERMINAL attempts-exhausted"
+      - name: Run Helper engine test (ocserv auth + cookie reuse)
+        # Full loop short of a real tunnel: password auth captures a
+        # cookie, the tun failure (the runner user cannot create utun)
+        # classifies Transient, and later attempts reuse the cookie.
+        # --no-routes keeps the runner's routing untouched; pf loads
+        # only on a connect hook, which cannot fire without a tun.
+        timeout-minutes: 10
+        run: |
+          brew install ocserv
+          sudo core/scripts/ocserv-test.sh start
+          sudo chmod 644 /tmp/ocserv-test/ca-cert.pem
+          HELPER=$(find ~/Library/Developer/Xcode/DerivedData/AlwaysConnect-*/Build/Products/Debug -maxdepth 1 -name AlwaysConnectHelper -type f | head -1)
+          test -n "$HELPER"
+          rm -rf /tmp/ac-engine-test && mkdir -p /tmp/ac-engine-test
+          OUT=$(printf 'testpass\n' | "$HELPER" run-once --server https://127.0.0.1:4443 --user testuser --cafile /tmp/ocserv-test/ca-cert.pem --max-attempts 3 --no-routes --cookie-store /tmp/ac-engine-test/session.json --support-dir /tmp/ac-engine-test 2>&1)
+          echo "$OUT"
+          echo "$OUT" | grep -q "credential password"
+          echo "$OUT" | grep -q "credential cookie"
+          echo "$OUT" | grep -q "TERMINAL attempts-exhausted"
+          test -s /tmp/ac-engine-test/session.json
+      - name: Stop macOS test gateway
+        if: always()
+        run: sudo core/scripts/ocserv-test.sh stop || true
       - name: Run Helper (pf anchor smoke check)
         # The scheme also builds AlwaysConnectHelper (a plain tool, no
         # entitlements needed to run). Verify generation output, and

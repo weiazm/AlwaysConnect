@@ -36,6 +36,7 @@ final class CLIOrchestrator {
         var username: String
         var password: String
         var openconnectPath: String?
+        var cafile: String? = nil
         var scriptPath: String
         var cookieStore: CookieStore
         var physicalIf: String
@@ -144,6 +145,9 @@ final class CLIOrchestrator {
             args += ["--authgroup=\(config.group)"]
         }
         args += ["--user=\(config.username)"]
+        if let cafile = config.cafile, !cafile.isEmpty {
+            args += ["--cafile=\(cafile)"]
+        }
         var credentialText: String
         if let record = useCookie {
             args += ["--cookie-on-stdin"]
@@ -194,7 +198,7 @@ final class CLIOrchestrator {
         self.outputPipe = outPipe
         self.errorPipe = errPipe
         _ = driver.authenticated()
-        reportState(detail: "spawning openconnect (attempt \(attempts))")
+        reportState(detail: "spawning openconnect (attempt \(attempts), credential \(fedCredential == .cookie ? "cookie" : "password"))")
         do {
             try process.run()
         } catch {
