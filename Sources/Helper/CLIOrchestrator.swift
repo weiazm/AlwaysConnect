@@ -132,7 +132,7 @@ final class CLIOrchestrator {
         hookFired = false
         sawLoginFailed = false
 
-        let useCookie = cookieStore.usableRecord(for: config.server)
+        let useCookie = config.cookieStore.usableRecord(for: config.server)
         var args: [String] = []
         let executable = openConnectExecutable()
         if executable == "/usr/bin/env" {
@@ -285,13 +285,13 @@ final class CLIOrchestrator {
     }
 
     private func handleLine(_ line: String, isStdout: Bool) {
-        appendTail(redact(line))
+        appendTail(Self.redact(line))
         if line.hasPrefix("AC_HOOK ") {
             handleHook(String(line.dropFirst("AC_HOOK ".count)))
             return
         }
         if isStdout, let cookie = captureCookie(from: line) {
-            cookieStore.save(cookie: cookie, gateway: config.server)
+            config.cookieStore.save(cookie: cookie, gateway: config.server)
             return
         }
         if !isStdout, line.contains("Login failed.") {
@@ -404,7 +404,7 @@ final class CLIOrchestrator {
         if fedCredential == .cookie, !hookFired {
             // Cookie rejected before any tunnel: drop it, try the
             // password exactly once for this session start.
-            cookieStore.clear()
+            config.cookieStore.clear()
             if !cookieFallbackUsed {
                 cookieFallbackUsed = true
                 spawnNext()
