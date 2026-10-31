@@ -7,12 +7,21 @@ import Foundation
 /// Exit 0 iff every hard check passes; IPv6 bind is reported but not
 /// asserted (a runner without IPv6 loopback would fail it for
 /// environmental reasons, not code reasons).
+///
+/// All diagnostics go to stderr, unbuffered: stdout is block-buffered
+/// when piped, so a crash (SIGTRAP) would otherwise swallow every
+/// PASS line printed before it and hide which check died.
 
 var failures = 0
 
+func log(_ line: String) {
+    FileHandle.standardError.write((line + "\n").data(using: .utf8)!)
+}
+
 func check(_ name: String, _ body: () -> Bool) {
+    log("START \(name)")
     let ok = body()
-    print("\(ok ? "PASS" : "FAIL") \(name)")
+    log("\(ok ? "PASS" : "FAIL") \(name)")
     if !ok { failures += 1 }
 }
 
@@ -211,15 +220,15 @@ do {
         let ok = lo0 != 0 && Darwin.setsockopt(
             fd, IPPROTO_IPV6, IPV6_BOUND_IF, &idx,
             socklen_t(MemoryLayout<UInt32>.size)) == 0
-        print("INFO IPV6_BOUND_IF setsockopt: \(ok ? "ok" : "unavailable")")
+        log("INFO IPV6_BOUND_IF setsockopt: \(ok ? "ok" : "unavailable")")
     } else {
-        print("INFO IPV6_BOUND_IF setsockopt: no IPv6 socket")
+        log("INFO IPV6_BOUND_IF setsockopt: no IPv6 socket")
     }
 }
 
 // Live discovery is informational only: a loopback-only runner has
 // no physical interface, and that is not a code failure.
-print("INFO live physical interface: \(discoverPhysicalInterface() ?? "none")")
+log("INFO live physical interface: \(discoverPhysicalInterface() ?? "none")")
 
-print(failures == 0 ? "PUMPTEST ALL PASS" : "PUMPTEST \(failures) FAILURES")
+log(failures == 0 ? "PUMPTEST ALL PASS" : "PUMPTEST \(failures) FAILURES")
 exit(failures == 0 ? 0 : 1)
