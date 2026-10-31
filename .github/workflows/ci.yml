@@ -115,18 +115,27 @@ jobs:
           HELPER=$(find ~/Library/Developer/Xcode/DerivedData/AlwaysConnect-*/Build/Products/Debug -maxdepth 1 -name AlwaysConnectHelper -type f | head -1)
           test -n "$HELPER"
           rm -rf /tmp/ac-engine-test && mkdir -p /tmp/ac-engine-test
-          # See the no-server step: run-once exits 3 by design.
-          set +e
-          OUT=$(printf 'testpass\n' | "$HELPER" run-once --server https://127.0.0.1:4444 --user testuser --cafile /tmp/ac-mock/ca-cert.pem --max-attempts 3 --no-routes --cookie-store /tmp/ac-engine-test/session.json --support-dir /tmp/ac-engine-test 2>&1)
-          RUN_EXIT=$?
-          set -e
+          # run-once runs in the background under a watchdog so that
+          # even if it hangs, the mock log and partial output are
+          # always printed (a plain command substitution would die
+          # with the step timeout and hide the evidence).
+          (printf 'testpass\n' | "$HELPER" run-once --server https://127.0.0.1:4444 --user testuser --cafile /tmp/ac-mock/ca-cert.pem --max-attempts 3 --no-routes --cookie-store /tmp/ac-engine-test/session.json --support-dir /tmp/ac-engine-test > /tmp/ac-engine-test/out.txt 2>&1; echo $? > /tmp/ac-engine-test/exit.txt) &
+          RUN_PID=$!
+          for _ in $(seq 1 24); do
+            kill -0 "$RUN_PID" 2>/dev/null || break
+            sleep 5
+          done
+          kill "$RUN_PID" 2>/dev/null || true
           kill "$(cat /tmp/ac-mock/mock.pid)" || true
+          echo "--- mock requests ---"
           cat /tmp/ac-mock/mock.log
-          echo "$OUT"
-          test "$RUN_EXIT" -eq 3
-          echo "$OUT" | grep -q "credential password"
-          echo "$OUT" | grep -q "credential cookie"
-          echo "$OUT" | grep -q "TERMINAL attempts-exhausted"
+          echo "--- run-once output ---"
+          cat /tmp/ac-engine-test/out.txt
+          RUN_EXIT=$(cat /tmp/ac-engine-test/exit.txt 2>/dev/null || echo "timeout")
+          test "$RUN_EXIT" = "3"
+          grep -q "credential password" /tmp/ac-engine-test/out.txt
+          grep -q "credential cookie" /tmp/ac-engine-test/out.txt
+          grep -q "TERMINAL attempts-exhausted" /tmp/ac-engine-test/out.txt
           grep -q mockcookie123 /tmp/ac-engine-test/session.json
       - name: Run Helper (pf anchor smoke check)
         # The scheme also builds AlwaysConnectHelper (a plain tool, no

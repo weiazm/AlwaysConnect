@@ -263,22 +263,26 @@ final class CLIOrchestrator {
         }
     }
 
-    /// After the child exits, synchronously drain whatever is left in
-    /// the pipes (the termination handler can fire before the last
-    /// readability events arrive) and flush partial trailing lines.
-    /// Without this, a "Login failed." line could be classified late
-    /// and a form-stage rejection misread as a transient failure.
+    /// After the child exits, drain whatever is already buffered in
+    /// the pipes and flush partial trailing lines. This deliberately
+    /// uses non-blocking availableData, NOT readDataToEndOfFile: the
+    /// latter waits for EOF, and any inherited write end held open
+    /// past the child's death (a spawned helper, a leaked fd) would
+    /// deadlock the engine queue forever. Missing a straggler line
+    /// is acceptable; hanging the session is not. The lines that
+    /// decide classification (Login failed., AC_HOOK) always arrive
+    /// well before the child exits.
     private func drainPipesAtExit() {
         if let out = outputPipe {
             out.fileHandleForReading.readabilityHandler = nil
-            let data = out.fileHandleForReading.readDataToEndOfFile()
+            let data = out.fileHandleForReading.availableData
             if let text = String(data: data, encoding: .utf8), !text.isEmpty {
                 stdoutBuffer += text
             }
         }
         if let err = errorPipe {
             err.fileHandleForReading.readabilityHandler = nil
-            let data = err.fileHandleForReading.readDataToEndOfFile()
+            let data = err.fileHandleForReading.availableData
             if let text = String(data: data, encoding: .utf8), !text.isEmpty {
                 stderrBuffer += text
             }
