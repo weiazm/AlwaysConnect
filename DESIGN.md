@@ -350,13 +350,31 @@ openconnect 的精确退出码表不在本节写死——以 ocserv 实测与真
 
 Cookie 恢复失败不直接判 AuthFailure：先回落到密码全新认证一次，密码亦拒才判 AuthFailure。SessionRecord 的 usable_for 规则不变（只判网关匹配与 Cookie 非空），不猜过期。
 
+### 16.3.1 实测依据（2026-10-31，ocserv 1.2.4 + openconnect 9.12，沙箱）
+
+分类器只认 Helper 观测到的事实，不认退出码数值本身——实测证明退出码会骗人：
+
+| 场景 | 客户端所见 | 服务端实情（debug 日志） | 分类 |
+| --- | --- | --- | --- |
+| 错密码 | exit 1，stderr 含 "Login failed."，脚本零调用 | 表单认证失败 | AuthFailure（停住不重试） |
+| 假 Cookie（--cookie-on-stdin） | exit 1，stderr "VPN service unavailable"，脚本零调用 | Cookie 校验失败 | Cookie 失效 → 丢弃记录、密码兜底一次 |
+| 正确密码 | exit 2，stderr "Cookie was rejected by server; exiting."，脚本零调用 | 会话已建立、已分配 IP 10.77.0.121，随后 `TUNSETIFF: Operation not permitted`（沙箱禁 tun 设备） | Transient（认证后失败），绝不是 AuthFailure |
+
+教训：exit 2 + "Cookie was rejected" 在沙箱里是 tun 失败的表象，不是认证被拒；把退出码或该文案直接映射成"密码错"会在 Mac 上误杀正常会话。分类的第一信号永远是脚本钩子（connect 到达与否）与喂入的凭据种类，stderr 文案只作辅助；"Login failed." 是表单阶段的实测信号，真实网关的文案可能不同，届时以实测补表。
+
+### 16.3.2 隧道 Cookie 的捕获方式
+
+CLI 进程不向调用方返回 Cookie；Helper 从子进程的 `--verbose` stdout 里解析 `Set-Cookie: webvpn=` 行捕获（前缀必须精确匹配，`webvpncontext=` 不算）。捕获到的 Cookie 立即写入 CookieStore（0600）；子进程的 stdout/stderr 绝不原样进日志或诊断包，含 `webvpn=` / `webvpncontext=` 的行一律掩码后再存。
+
 ### 16.4 vpnc-script：失败关闭第一道
 
 Helper 自带自定义 vpnc-script（sh），openconnect 以 `$reason` 区分调用点：
 
-- `connect`：按 Helper 写入的配置设路由与 DNS；成功后向 stderr 写钩子行 `AC_HOOK connect`，Helper 据此把状态推为 Connected 并装载 pf。
-- `disconnect`：一律只记日志，不拆路由、不清 pf；唯一的例外是 Helper 在拉起脚本前以环境变量标明本次为手动断开，脚本见标记才执行恢复路径。意外掉线时路由与 pf 原地保留，openconnect 自身重连 + Helper 退避双保险。
-- 脚本与 openconnect 共享 stderr 流：钩子行与 `--verbose` 输出走同一流，Helper 按行解析；钩子行格式固定为 `AC_HOOK <事件>`，事件名只增不改名。
+- `connect`：按 Helper 写入的配置设路由与 DNS；成功后向 stdout 写钩子行 `AC_HOOK connect tun=<if> gateway=<ip>`，Helper 据此把状态推为 Connected 并装载 pf。路由/DNS 命令失败时脚本以非零退出且不发钩子，引擎永不把"路由没立起来"报成已连接。
+- `disconnect`：一律只记日志，不拆路由、不清 pf；唯一的例外是 Helper 在手动断开前先落一个标志文件，脚本见标志才执行恢复路径。意外掉线时路由与 pf 原地保留，openconnect 自身重连 + Helper 退避双保险。
+- 脚本与 openconnect 共享 stdout/stderr：钩子行与 `--verbose` 输出走同一流，Helper 按行解析；钩子行格式固定为 `AC_HOOK <事件>`，事件名只增不改名。
+
+脚本分支逻辑已在 Linux 上验过（取 Swift 内嵌文本、按 Swift 多行字符串缩进规则还原后逐分支执行）：disconnect 无标志 → `disconnect-held` 且不跑路由命令；disconnect 有手动标志 → `disconnect-manual`；connect（NO_ROUTES 测试模式）→ `connect tun=… gateway=…`；attempt-reconnect / pre-init / 未知 reason → exit 0。Mac 专属的 `route`/`scutil` 命令本身未在 Mac 上跑过，仍是 Mac proof 待验证项。
 
 ### 16.5 等批准态启发式（待验证项，不承诺精确文案）
 

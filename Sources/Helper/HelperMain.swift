@@ -13,26 +13,43 @@ import Foundation
 ///   unexpected drop — even if the tunnel provider process dies, the pf
 ///   rules keep holding the line.
 ///
-/// This binary's current surface is deliberately small: it generates the
-/// pf anchor text (Rust core) on stdout so the install path and the CI
-/// runner can verify generation without touching the live packet filter.
-/// Loading (`pfctl -a ANCHOR -f file`) and removal (`pfctl -a ANCHOR -F
-/// rules`) arrive with the LaunchDaemon installation (Phase 2); they need
-/// root and a Mac, so they are not faked here.
-///
-/// Usage:
-///   AlwaysConnectHelper generate-pf --phys <if> --tun <if>
-///       --gateway <ip[,ip...]> [--allow <cidr[,cidr...]>]
-/// Exit codes: 0 success, 1 generation rejected, 2 usage error.
+/// Subcommands:
+///   generate-pf ...  (see usage below; verifies pf text generation
+///                     without touching the live packet filter)
+///   run-once ...     Engine test entry: runs one CLI-orchestrated
+///                     session in the foreground. The PRODUCT path
+///                     passes credentials over XPC (Phase 1 step 3);
+///                     run-once reads the password from stdin purely
+///                     so the engine can be exercised without the App.
+///                     Never use run-once as the product login path.
 @main
 struct HelperMain {
     static func main() {
         var args = CommandLine.arguments.dropFirst()
-        guard args.first == "generate-pf" else {
+        guard let command = args.first else {
             usage()
             exit(2)
         }
         args = args.dropFirst()
+        switch command {
+        case "generate-pf":
+            generatePf(args: args)
+        case "run-once":
+            runOnce(args: args)
+        default:
+            usage()
+            exit(2)
+        }
+    }
+
+    // MARK: - generate-pf
+
+    /// Usage:
+    ///   AlwaysConnectHelper generate-pf --phys <if> --tun <if>
+    ///       --gateway <ip[,ip...]> [--allow <cidr[,cidr...]>]
+    /// Exit codes: 0 success, 1 generation rejected, 2 usage error.
+    static func generatePf(args: ArraySlice<String>) {
+        var args = args
         var phys: String?
         var tun: String?
         var gateway: String?
@@ -72,7 +89,147 @@ struct HelperMain {
         print(text, terminator: "")
     }
 
+    // MARK: - run-once
+
+    /// Usage:
+    ///   AlwaysConnectHelper run-once --server <url> --user <name>
+    ///       [--group <group>] [--phys <if>] [--allow <cidr,...>]
+    ///       [--cookie-store <path>] [--support-dir <path>]
+    ///       [--openconnect <path>] [--script <path>]
+    ///       [--max-attempts <n>] [--no-routes]
+    ///   Password is read as one line from stdin (piped, not prompted).
+    /// Exit codes: 0 manual stop (SIGINT/SIGTERM), 1 auth failure,
+    /// 2 usage error, 3 attempt limit reached.
+    static func runOnce(args: ArraySlice<String>) {
+        var args = args
+        var server: String?
+        var group = ""
+        var user: String?
+        var phys = "en0"
+        var allow = "192.168.0.0/16"
+        var cookieStorePath: String?
+        var supportDirPath: String?
+        var openconnectPath: String?
+        var scriptPath: String?
+        var maxAttempts: Int?
+        var noRoutes = false
+        while let flag = args.first {
+            args = args.dropFirst()
+            if flag == "--no-routes" {
+                noRoutes = true
+                continue
+            }
+            guard let value = args.first else {
+                fputs("missing value for \(flag)\n", stderr)
+                exit(2)
+            }
+            args = args.dropFirst()
+            switch flag {
+            case "--server": server = value
+            case "--group": group = value
+            case "--user": user = value
+            case "--phys": phys = value
+            case "--allow": allow = value
+            case "--cookie-store": cookieStorePath = value
+            case "--support-dir": supportDirPath = value
+            case "--openconnect": openconnectPath = value
+            case "--script": scriptPath = value
+            case "--max-attempts": maxAttempts = Int(value)
+            default:
+                fputs("unknown flag: \(flag)\n", stderr)
+                exit(2)
+            }
+        }
+        guard let server, let user else {
+            fputs("required: --server, --user\n", stderr)
+            exit(2)
+        }
+        // One password line from stdin. No prompt, no echo control:
+        // this is a piped test harness, not a login UI.
+        guard let passwordData = FileHandle.standardInput.availableData as Data?,
+              let password = String(data: passwordData, encoding: .utf8)?
+                .split(separator: "\n", maxSplits: 1).first.map(String.init),
+              !password.isEmpty
+        else {
+            fputs("run-once: password line required on stdin\n", stderr)
+            exit(2)
+        }
+
+        let script: String
+        do {
+            if let given = scriptPath {
+                script = given
+            } else {
+                script = try VpncScript.install()
+            }
+        } catch {
+            fputs("run-once: vpnc-script install failed: \(error)\n", stderr)
+            exit(1)
+        }
+
+        let storeURL = cookieStorePath.map { URL(fileURLWithPath: $0) }
+            ?? CookieStore.defaultFileURL
+        let config = CLIOrchestrator.Config(
+            server: server,
+            group: group,
+            username: user,
+            password: password,
+            openconnectPath: openconnectPath,
+            scriptPath: script,
+            cookieStore: CookieStore(fileURL: storeURL),
+            physicalIf: phys,
+            allowNetworks: allow.split(separator: ",").map(String.init),
+            maxAttempts: maxAttempts,
+            noRoutes: noRoutes,
+            supportDir: supportDirPath.map { URL(fileURLWithPath: $0) }
+        )
+        let engine = CLIOrchestrator(config: config)
+        let done = DispatchSemaphore(value: 0)
+        var exitCode: Int32 = 0
+        engine.onState = { state, detail in
+            print("STATE \(stateName(state)) \(detail)")
+            fflush(stdout)
+        }
+        engine.onTerminal = { reason in
+            switch reason {
+            case .stoppedManual:
+                print("TERMINAL manual-stop")
+                exitCode = 0
+            case .authFailure:
+                print("TERMINAL auth-failure")
+                exitCode = 1
+            case .attemptsExhausted:
+                print("TERMINAL attempts-exhausted")
+                exitCode = 3
+            }
+            done.signal()
+        }
+        signal(SIGINT, SIG_IGN)
+        signal(SIGTERM, SIG_IGN)
+        for sig in [SIGINT, SIGTERM] {
+            let source = DispatchSource.makeSignalSource(signal: sig, queue: .main)
+            source.setEventHandler { engine.stop() }
+            source.resume()
+        }
+        engine.start()
+        done.wait()
+        exit(exitCode)
+    }
+
+    private static func stateName(_ state: SessionDriverClient.State) -> String {
+        switch state {
+        case .disconnected: return "disconnected"
+        case .connecting: return "connecting"
+        case .authenticating: return "authenticating"
+        case .awaitingApproval: return "awaiting-approval"
+        case .connected: return "connected"
+        case .reconnecting: return "reconnecting"
+        }
+    }
+
     private static func usage() {
-        fputs("Usage: AlwaysConnectHelper generate-pf --phys <if> --tun <if> --gateway <ip[,ip...]> [--allow <cidr[,cidr...]>]\n", stderr)
+        fputs("Usage:\n", stderr)
+        fputs("  AlwaysConnectHelper generate-pf --phys <if> --tun <if> --gateway <ip[,ip...]> [--allow <cidr[,cidr...]>]\n", stderr)
+        fputs("  AlwaysConnectHelper run-once --server <url> --user <name> [--group <group>] [--phys <if>] [--allow <cidr,...>] [--cookie-store <path>] [--support-dir <path>] [--openconnect <path>] [--script <path>] [--max-attempts <n>] [--no-routes]\n", stderr)
     }
 }
