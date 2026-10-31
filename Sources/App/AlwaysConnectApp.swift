@@ -22,7 +22,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         let profile = ProfileStore.loadProfile()
-        panelController = PanelController(manager: TunnelManager.shared, profile: profile)
+        panelController = PanelController(manager: HelperClient.shared, profile: profile)
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         statusItem?.button?.title = "AC"
         statusItem?.button?.target = self
@@ -30,16 +30,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // TODO (Phase 1): replace the placeholder title with a status icon
         // (color + shape: green solid = connected, yellow triangle = awaiting
         // approval/connecting, red hollow = disconnected with kill switch on),
-        // driven by TunnelManager.shared.status.
+        // driven by HelperClient.shared.state.
         // Auto-connect on launch when credentials are stored.
         if profile.autoConnectOnLaunch,
            let username = ProfileStore.loadUsername(), !username.isEmpty,
            let password = KeychainStore.read(server: profile.server, username: username) {
-            TunnelManager.shared.loadOrCreate(profile: profile, username: username, password: password) { error in
-                if error == nil {
-                    TunnelManager.shared.start { _ in }
-                }
-            }
+            HelperClient.shared.connect(
+                server: profile.server, group: profile.group,
+                username: username, password: password)
         }
     }
 
@@ -49,8 +47,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
-        // NOTE: quitting the App must NOT tear down the tunnel. The tunnel
-        // and reconnect loop live in the PacketTunnelProvider, which is
-        // managed by the system, not by this process.
+        // NOTE: quitting the App must NOT tear down the tunnel. The
+        // tunnel and reconnect loop live in the Helper daemon, which
+        // is independent of this process.
     }
 }

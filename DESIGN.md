@@ -404,3 +404,18 @@ Helper 以 root 身份把 SessionRecord 存于 Helper 专属文件（0600，仅 
 | Proxy 数据泵运行时 | 否 | 是 |
 
 Phase 1 的完成标准是左列全绿；右列仍挂起，不假装已验。
+
+### 16.9 XPC 落实（Phase 1 step 3）
+
+共享契约在 Sources/Shared/HelperXPC.swift（App 与 Helper 双目标编译，防漂移）：
+
+- Mach service：`com.alwaysconnect.app.helper`。
+- App → Helper：`connect(server:group:username:password:reply:)`、`disconnect(reply:)`、`getStatus(reply:) -> (stateCode, detail)`。凭据每次连接时经 XPC 发送一次，Helper 只放内存。
+- Helper → App：`statusChanged(state:detail:)` 单向推送，App 不轮询。
+- 状态码与 Rust 驱动一致（0–5）；凭据被拒不设第七态，以 terminal 回调的 error detail 呈现。
+
+Helper 侧（Sources/Helper/HelperDaemon.swift）：`daemon` 子命令起 NSXPCListener，accept 时校验客户端团队标识——须与 Helper 自身的团队标识一致；未签名的开发构建两侧均为 nil，放行并记日志；签名后只有同团队客户端能连，任意本地进程无法驱动 root 守护进程的 pf 与隧道。Helper 重启后 App 下一次用户操作或启动自动连接时重新发送凭据，不做静默无限重连。
+
+App 侧（Sources/App/HelperClient.swift）：懒建连接，中断/失效时面板显示 Helper 未运行；面板（PanelAndSettings.swift）状态源已切到 HelperClient，开关 off 时先出内联确认行，确认后才断开；快捷入口四格待 Settings 页落地时再接（Phase 2）。
+
+Mac-proof 待验证项（不在 runner 上假装）：launchd plist 与 SMAppService 安装、签名后的团队标识校验、菜单栏图标四态、XPC 端到端（App ↔ Helper ↔ openconnect）实跑。

@@ -1,37 +1,67 @@
 import SwiftUI
 
 /// Menu-bar popover: big switch, one-line status, mode, server, and the
-/// last tunnel error. All tunnel state arrives via NEVPNStatusDidChange
-/// (see TunnelManager); nothing here polls.
+/// last error. All tunnel state arrives via Helper XPC pushes (see
+/// HelperClient); nothing here polls.
+/// Disconnect goes through an inline confirm row (UI-DESIGN.md §四):
+/// flipping the switch off never drops the tunnel immediately.
 /// The panel is lazily created and released on close to keep the App's
 /// footprint minimal.
 struct PanelView: View {
-    @ObservedObject var manager: TunnelManager
+    @ObservedObject var manager: HelperClient
     var profile: Profile
     var onStart: () -> Void
     var onStop: () -> Void
+    @State private var showConfirmDisconnect = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Toggle(
                 "VPN",
                 isOn: Binding(
-                    get: {
-                        manager.status == .connected
-                            || manager.status == .connecting
-                            || manager.status == .reasserting
-                    },
-                    set: { on in on ? onStart() : onStop() }
+                    get: { manager.switchIsOn },
+                    set: { on in
+                        if on {
+                            showConfirmDisconnect = false
+                            onStart()
+                        } else {
+                            showConfirmDisconnect = true
+                        }
+                    }
                 )
             )
             .toggleStyle(.switch)
             Text(statusLine)
                 .font(.callout)
+            if !manager.detail.isEmpty {
+                Text(manager.detail)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
             Text("模式：\(profile.defaultMode == .secure ? "全部走 VPN" : "仅名单走 VPN") · 服务器：\(profile.server)")
                 .font(.caption)
                 .foregroundStyle(.secondary)
+            if showConfirmDisconnect {
+                HStack {
+                    Text("确认断开 VPN？")
+                        .font(.callout)
+                    Spacer()
+                    Button("确认断开") {
+                        showConfirmDisconnect = false
+                        onStop()
+                    }
+                    Button("取消") {
+                        showConfirmDisconnect = false
+                    }
+                }
+            }
             if let error = manager.lastError {
                 Text(error)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+            }
+            if !manager.helperAvailable {
+                Text("Helper 未运行")
                     .font(.caption)
                     .foregroundStyle(.red)
             }
@@ -41,24 +71,23 @@ struct PanelView: View {
     }
 
     private var statusLine: String {
-        switch manager.status {
-        case .invalid: return "未配置"
+        switch manager.state {
         case .disconnected: return "已断开"
         case .connecting: return "连接中…"
+        case .authenticating: return "认证中…"
+        case .awaitingApproval: return "等批准：请在手机上点批准"
         case .connected: return "已连接 · \(profile.server)"
-        case .reasserting: return "重连中…"
-        case .disconnecting: return "断开中…"
-        @unknown default: return "未知状态"
+        case .reconnecting: return "重连中…"
         }
     }
 }
 
 final class PanelController: NSObject {
     private var popover: NSPopover?
-    private let manager: TunnelManager
+    private let manager: HelperClient
     private let profile: Profile
 
-    init(manager: TunnelManager, profile: Profile) {
+    init(manager: HelperClient, profile: Profile) {
         self.manager = manager
         self.profile = profile
     }
@@ -72,7 +101,7 @@ final class PanelController: NSObject {
             manager: manager,
             profile: profile,
             onStart: { [weak self] in self?.startTapped() },
-            onStop: { [weak self] in self?.manager.stop() }
+            onStop: { [weak self] in self?.manager.disconnect() }
         )
         let pop = NSPopover()
         pop.contentViewController = NSHostingController(rootView: view)
@@ -89,10 +118,9 @@ final class PanelController: NSObject {
         guard let username = ProfileStore.loadUsername(), !username.isEmpty,
               let password = KeychainStore.read(server: profile.server, username: username)
         else { return }
-        manager.loadOrCreate(profile: profile, username: username, password: password) { [weak self] error in
-            guard let self, error == nil else { return }
-            self.manager.start { _ in }
-        }
+        manager.connect(
+            server: profile.server, group: profile.group,
+            username: username, password: password)
     }
 }
 

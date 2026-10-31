@@ -36,10 +36,28 @@ struct HelperMain {
             generatePf(args: args)
         case "run-once":
             runOnce(args: args)
+        case "daemon":
+            daemon()
         default:
             usage()
             exit(2)
         }
+    }
+
+    // MARK: - daemon
+
+    /// LaunchDaemon entry: serve XPC on AlwaysConnectHelperMachService
+    /// until killed. Installed via SMAppService + a launchd plist
+    /// (Mac-proof item: needs signing; see DESIGN.md §16.9). The
+    /// daemon owns the tunnel and the reconnect loop, so quitting the
+    /// App never tears the session down.
+    private static var retainedDaemon: HelperDaemon?
+
+    static func daemon() {
+        let daemon = HelperDaemon()
+        retainedDaemon = daemon
+        daemon.start()
+        dispatchMain()
     }
 
     // MARK: - generate-pf
@@ -231,5 +249,6 @@ struct HelperMain {
         fputs("Usage:\n", stderr)
         fputs("  AlwaysConnectHelper generate-pf --phys <if> --tun <if> --gateway <ip[,ip...]> [--allow <cidr[,cidr...]>]\n", stderr)
         fputs("  AlwaysConnectHelper run-once --server <url> --user <name> [--group <group>] [--phys <if>] [--allow <cidr,...>] [--cookie-store <path>] [--support-dir <path>] [--openconnect <path>] [--script <path>] [--max-attempts <n>] [--no-routes]\n", stderr)
+        fputs("  AlwaysConnectHelper daemon\n", stderr)
     }
 }
