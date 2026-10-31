@@ -175,7 +175,8 @@ jobs:
           chmod +x "$SCRIPT"
           head -1 "$SCRIPT" | grep -q '#!/bin/sh'
           echo "HELPER=$HELPER"
-          grep -c 'MANUAL_FLAG_PATH' "$SCRIPT"
+          grep -c 'MANUAL_FLAG_PATH' Sources/Helper/VpncScript.swift || true
+          grep -c 'MANUAL_FLAG_PATH' "$SCRIPT" || true
           sed -n '/disconnect)/,/attempt-reconnect/p' "$SCRIPT"
           export TUNDEV=utun9 VPNGATEWAY=10.0.0.1 ALWAYSCONNECT_NO_ROUTES=1
           OUT=$(env -u ALWAYSCONNECT_MANUAL_FLAG_PATH "$SCRIPT" disconnect)
