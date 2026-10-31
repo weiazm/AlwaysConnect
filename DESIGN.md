@@ -302,3 +302,87 @@
 - Helper 侧：除 generate-pf 外，增加 CLI 编排（拉起、停止、退出码与重连决策、Cookie 持久化复用 SessionRecord、pf 加载/卸载、vpnc-script）。
 - Rust 核：会话驱动复用为编排决策逻辑；认证结果映射从 obtain_cookie 码改为 CLI 退出码 + 脚本钩子信号（Phase 1 落实）。
 - 本决议之前的 Tunnel 相关设计段落（第二节架构、第六节第 3 条隧道层）以本节为准，不再单独改旧文。
+
+## 十六、Phase 1：Helper XPC + CLI 编排契约
+
+Phase 1 的第一步，先定接口再写码。本节是 App、Helper、openconnect CLI、vpnc-script 之间的契约，后续代码按本节实现；与实测不符处以实测为准并回改本节，不静默偏离。
+
+### 16.1 XPC 协议（App ↔ Helper）
+
+Helper 以 LaunchDaemon 常驻，App 经 NSXPCConnection 连 Helper 的 Mach service。Helper 只把凭据放内存，绝不落盘；Helper 重启后 App 在启动自动连接时重新发送。
+
+App → Helper：
+
+| 消息 | 参数 | 说明 |
+| --- | --- | --- |
+| connect | server、group、username、password | 启动一次连接；Helper 决定走 Cookie 恢复还是全新认证 |
+| disconnect | 无 | 用户手动断开；Helper 停 CLI 并显式恢复本地网络 |
+| getStatus | 无 | 拉取当前状态与 lastError |
+
+Helper → App（状态订阅回调）：
+
+| 回调 | 参数 | 说明 |
+| --- | --- | --- |
+| statusChanged | state（六态之一）、detail | 状态变化即推，面板只认 Helper 上报，不再认 NEVPNStatus |
+| errorChanged | lastError（原因 + 下一步，不贴码） | 错误行文案来源 |
+
+六态与 UI-DESIGN.md 第三节一一对应：Disconnected / Connecting / Authenticating / AwaitingApproval / Connected / Reconnecting；凭据被拒不是第七态，是 Connected 失败后的错误行 + 驱动停住。
+
+### 16.2 CLI 拉起参数
+
+Helper 用 Foundation Process 拉起 openconnect，参数只给必需项，不堆 flags：
+
+- 全新认证：`openconnect --server=<server> --authgroup=<group> --user=<user> --passwd-on-stdin --script=<vpnc-script> --verbose`
+- 会话恢复：把 `--passwd-on-stdin` 换成 `--cookie-on-stdin`，其余相同。
+- 凭据经子进程 stdin 一次性写入，管道在进程存活期间保持打开，停止时关闭；Helper 不把凭据写进命令行参数（ps 可见）或日志。
+- `--verbose` 只要一个目的：等批准态的输出启发式（16.5）；除此之外不依赖 verbose 文案做决策。
+
+### 16.3 退出码与重连决策：先定分类，码值以实测为准
+
+openconnect 的精确退出码表不在本节写死——以 ocserv 实测与真实网关观测为准，Phase 1 落实阶段填表。决策只认四类，分类依据是退出状态 + 子进程 stderr 尾行 + 脚本钩子信号三者合议，任一信号不足时按 Transient 处理（宁可多重试一次，不把可恢复的掉线判成死局；但 Rejected 例外，见下）：
+
+| 类别 | 含义 | 驱动动作 |
+| --- | --- | --- |
+| CleanStop | 手动断开或 Helper 主动停止 | 停住，恢复本地网络，面板灰圆环 |
+| AuthFailure | 认证被拒（坏密码、坏 Cookie 且密码兜底亦拒） | 停住不重试（防账号锁定），面板红字 + 直达凭据页 |
+| Transient | 网络中断、DPD 超时、网关不可达等可恢复失败 | 按退避（1/2/5/10/30s 封顶 + ±20% 抖动）无限重连，pf 与路由原地保留 |
+| ApprovalTimeout | 等批准启发式命中后 120s 内无进展 | 自动再发起一次认证并再推一条批准通知（面板显示次数） |
+
+Cookie 恢复失败不直接判 AuthFailure：先回落到密码全新认证一次，密码亦拒才判 AuthFailure。SessionRecord 的 usable_for 规则不变（只判网关匹配与 Cookie 非空），不猜过期。
+
+### 16.4 vpnc-script：失败关闭第一道
+
+Helper 自带自定义 vpnc-script（sh），openconnect 以 `$reason` 区分调用点：
+
+- `connect`：按 Helper 写入的配置设路由与 DNS；成功后向 stderr 写钩子行 `AC_HOOK connect`，Helper 据此把状态推为 Connected 并装载 pf。
+- `disconnect`：一律只记日志，不拆路由、不清 pf；唯一的例外是 Helper 在拉起脚本前以环境变量标明本次为手动断开，脚本见标记才执行恢复路径。意外掉线时路由与 pf 原地保留，openconnect 自身重连 + Helper 退避双保险。
+- 脚本与 openconnect 共享 stderr 流：钩子行与 `--verbose` 输出走同一流，Helper 按行解析；钩子行格式固定为 `AC_HOOK <事件>`，事件名只增不改名。
+
+### 16.5 等批准态启发式（待验证项，不承诺精确文案）
+
+Helper 从 `--verbose` 输出里识别 push 等待标记，命中后状态推为 AwaitingApproval 并推通知；120s 内无进展按 ApprovalTimeout 再发起。真实网关的实际输出形状是 Phase 1 待验证项：ocserv 只能验"启发式框架能跑"，验不出真实网关的标记文本；在拿到真实网关输出之前，文档与面板文案不承诺"识别到某某字样"，只承诺"等批准时面板与通知如实显示等待态"。
+
+### 16.6 pf 生命周期
+
+- 装载时机：`AC_HOOK connect` 到达且隧道接口已存在时，Helper 用 `pfctl -a com.alwaysconnect.killswitch -f <锚点文件>` 装载 ac_pf_generate 的输出；锚点文件由 Helper 生成，不复用 App 侧。
+- 卸载时机：只在手动断开（CleanStop）时卸载并恢复本地网络；Transient、ApprovalTimeout、AuthFailure 一律不卸载。
+- 网关 IP 变化时 Helper 重新生成锚点并重装（pf.rs 已定约束：网关 IP 必填，否则 pf 会挡住重连自身）。
+
+### 16.7 Cookie 持久化
+
+Helper 以 root 身份把 SessionRecord 存于 Helper 专属文件（0600，仅 root 可读），内容只有 gateway、server_fingerprint、cookie、saved_at_unix。App 侧 Keychain 仍是密码的唯一长期存放处；Helper 的 Cookie 文件是会话恢复缓存，不是凭据库。Cookie 恢复路径与密码路径共用同一套退出码分类与退避。
+
+### 16.8 验证矩阵（Linux 能验什么、什么只能 Mac 验）
+
+| 项 | Linux CI（ocserv）可验 | 只能 Mac 验 |
+| --- | --- | --- |
+| 拉起 / 停止 / 退出码分类框架 | 是（错密码 → AuthFailure；杀网关 → Transient） | 否 |
+| Cookie 恢复（拿 Cookie、复用、坏 Cookie 回落密码） | 是 | 否 |
+| vpnc-script 钩子行与 disconnect 不拆路由 | 是（脚本逻辑本身） | 路由表真实生效否 |
+| 退避决策、会话驱动、pf 文本生成 | 是（单测 + Helper 实跑） | 否 |
+| tun 设备、真实路由/DNS 切换 | 否（沙箱禁 tun 与改路由表） | 是 |
+| 真实网关输出形状、SeaTalk 批准流 | 否 | 是 |
+| Helper 安装（SMAppService）、pfctl 真实装载、签名/公证 | 否 | 是 |
+| Proxy 数据泵运行时 | 否 | 是 |
+
+Phase 1 的完成标准是左列全绿；右列仍挂起，不假装已验。
