@@ -160,11 +160,10 @@ jobs:
           fi
       - name: Run PumpTest harness (relay + interface select + bind)
         # PumpTest is built by the main scheme (see project.yml), so
-        # it lands in DerivedData like the Helper. Run it: relay
-        # bytes/half-close/error teardown over real socketpairs,
-        # interface selection on canned lists, and a real
-        # IP_BOUND_IF setsockopt.
+        # it lands in DerivedData like the Helper. Run it with the
+        # pump trace on: the trace lines bracket any crash to a
+        # single endpoint call (see RelayCore.swift).
         run: |
           PUMPTEST=$(find ~/Library/Developer/Xcode/DerivedData/AlwaysConnect-*/Build/Products/Debug -maxdepth 1 -name AlwaysConnectPumpTest -type f | head -1)
           test -n "$PUMPTEST"
-          "$PUMPTEST"
+          ALWAYSCONNECT_PUMP_TRACE=1 "$PUMPTEST"

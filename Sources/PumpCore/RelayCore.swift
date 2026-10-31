@@ -102,12 +102,28 @@ final class Relay {
     }
 
     private func finish() {
+        pumpTrace("relay finish enter finished=\(finished)")
         guard !finished else { return }
         finished = true
         a.close()
         b.close()
         onDone()
     }
+}
+
+/// Opt-in trace for pump debugging (harness and future Mac runs):
+/// set ALWAYSCONNECT_PUMP_TRACE=1 to log endpoint lifecycle calls
+/// to stderr. Writes are synchronous (unbuffered) so a crash cannot
+/// swallow the last lines, which is the whole point: the lines
+/// bracket the trapping call. Off by default; zero cost otherwise
+/// (one Bool check per site).
+private let pumpTraceEnabled: Bool = {
+    ProcessInfo.processInfo.environment["ALWAYSCONNECT_PUMP_TRACE"] == "1"
+}()
+
+private func pumpTrace(_ line: String) {
+    guard pumpTraceEnabled else { return }
+    FileHandle.standardError.write((line + "\n").data(using: .utf8)!)
 }
 
 /// File-descriptor endpoint for Relay, built on dispatch sources
@@ -156,6 +172,7 @@ final class FDEndpoint: PumpEndpoint {
     }
 
     func read(completion: @escaping (Data?, Error?) -> Void) {
+        pumpTrace("fd=\(fd) read() called")
         queue.async { [weak self] in
             guard let self else { return }
             if self.closed || self.readClosed {
@@ -171,6 +188,7 @@ final class FDEndpoint: PumpEndpoint {
     }
 
     func write(_ data: Data, completion: @escaping (Error?) -> Void) {
+        pumpTrace("fd=\(fd) write(\(data.count)) called")
         queue.async { [weak self] in
             guard let self else { return }
             if self.closed {
@@ -194,6 +212,7 @@ final class FDEndpoint: PumpEndpoint {
     }
 
     func closeRead() {
+        pumpTrace("fd=\(fd) closeRead() called")
         queue.async { [weak self] in
             guard let self, !self.closed, !self.readClosed else { return }
             self.readClosed = true
@@ -207,6 +226,7 @@ final class FDEndpoint: PumpEndpoint {
     }
 
     func closeWrite() {
+        pumpTrace("fd=\(fd) closeWrite() called")
         queue.async { [weak self] in
             guard let self, !self.closed, !self.writeClosed else { return }
             self.writeClosed = true
@@ -221,6 +241,7 @@ final class FDEndpoint: PumpEndpoint {
     }
 
     func close() {
+        pumpTrace("fd=\(fd) close() called")
         // Strong capture is deliberate: the fd must close even if the
         // pump (and relay) are already gone — a weak capture would let
         // this block evaporate with the endpoint and leak the fd.
@@ -236,39 +257,49 @@ final class FDEndpoint: PumpEndpoint {
     }
 
     private func resumeRead() {
+        pumpTrace("fd=\(fd) resumeRead resumed=\(readResumed)")
         if !readResumed {
             readResumed = true
             readSource?.resume()
         }
+        pumpTrace("fd=\(fd) resumeRead done")
     }
 
     private func suspendRead() {
+        pumpTrace("fd=\(fd) suspendRead resumed=\(readResumed)")
         if readResumed {
             readResumed = false
             readSource?.suspend()
         }
+        pumpTrace("fd=\(fd) suspendRead done")
     }
 
     private func resumeWrite() {
+        pumpTrace("fd=\(fd) resumeWrite resumed=\(writeResumed)")
         if !writeResumed {
             writeResumed = true
             writeSource?.resume()
         }
+        pumpTrace("fd=\(fd) resumeWrite done")
     }
 
     private func suspendWrite() {
+        pumpTrace("fd=\(fd) suspendWrite resumed=\(writeResumed)")
         if writeResumed {
             writeResumed = false
             writeSource?.suspend()
         }
+        pumpTrace("fd=\(fd) suspendWrite done")
     }
 
     private func onReadable() {
+        pumpTrace("fd=\(fd) onReadable enter")
         guard !closed, !readClosed else { return }
         var buffer = [UInt8](repeating: 0, count: 65536)
         let n = buffer.withUnsafeMutableBytes { raw in
             Darwin.read(fd, raw.baseAddress!, 65536)
         }
+        pumpTrace("fd=\(fd) onReadable read -> \(n)")
         if n > 0 {
             suspendRead()
             if let pending = pendingRead {
@@ -303,16 +334,19 @@ final class FDEndpoint: PumpEndpoint {
     }
 
     private func onWritable() {
+        pumpTrace("fd=\(fd) onWritable enter buf=\(outBuffer.count)")
         guard !closed else { return }
         while !outBuffer.isEmpty {
             let n = outBuffer.withUnsafeBytes { raw in
                 Darwin.write(fd, raw.baseAddress!, outBuffer.count)
             }
+            pumpTrace("fd=\(fd) onWritable write -> \(n) remaining=\(outBuffer.count)")
             if n > 0 {
                 outBuffer.removeFirst(n)
             } else if n < 0 {
                 let err = errno
                 if err == EAGAIN || err == EWOULDBLOCK {
+                    pumpTrace("fd=\(fd) onWritable EAGAIN, stay resumed")
                     return // Stay resumed; fires again when writable.
                 }
                 let error = NSError(
@@ -324,7 +358,12 @@ final class FDEndpoint: PumpEndpoint {
                 for completion in completions { completion(error) }
                 return
             } else {
-                break
+                // write() returning 0 wrote nothing: do NOT complete
+                // the writes as success (the old code fell through to
+                // the drained path). Stay resumed and retry on the
+                // next writable event, like EAGAIN.
+                pumpTrace("fd=\(fd) onWritable zero-write, stay resumed")
+                return
             }
         }
         // Buffer drained: complete the writes and honour a pending
