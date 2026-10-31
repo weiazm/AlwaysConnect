@@ -101,7 +101,11 @@ check("relay bytes both directions") {
     guard writeAll(b1, "world") else { return false }
     guard readExact(a1, 5) == "world" else { return false }
     relay.stop()
-    return done.wait(timeout: .now() + 5) == .success
+    guard done.wait(timeout: .now() + 5) == .success else { return false }
+    // Same drain as the half-close check: let the endpoints' async
+    // closes finish before the next check reuses fd numbers.
+    usleep(100_000)
+    return true
 }
 
 check("relay half-close drains then finishes") {
@@ -121,14 +125,29 @@ check("relay half-close drains then finishes") {
         a: FDEndpoint(fd: a2), b: FDEndpoint(fd: b2)) { done.signal() }
     relay.start()
     // a1 half-closes: b1 must see EOF, but b1 -> a1 still flows.
+    log("  half-close: shutdown a1 write")
     Darwin.shutdown(a1, Int32(SHUT_WR))
-    guard readEOF(b1) else { return false }
-    guard writeAll(b1, "back") else { return false }
-    guard readExact(a1, 4) == "back" else { return false }
+    guard readEOF(b1) else { log("  half-close: b1 EOF missing"); return false }
+    log("  half-close: b1 saw EOF")
+    guard writeAll(b1, "back") else { log("  half-close: b1 write failed"); return false }
+    log("  half-close: b1 wrote back")
+    guard readExact(a1, 4) == "back" else { log("  half-close: a1 back mismatch"); return false }
+    log("  half-close: a1 got back")
     // b1 half-closes: a1 must see EOF, and the relay finishes.
     Darwin.shutdown(b1, Int32(SHUT_WR))
-    guard readEOF(a1) else { return false }
-    return done.wait(timeout: .now() + 5) == .success
+    log("  half-close: shutdown b1 write")
+    guard readEOF(a1) else { log("  half-close: a1 EOF missing"); return false }
+    log("  half-close: a1 saw EOF")
+    guard done.wait(timeout: .now() + 5) == .success else {
+        log("  half-close: onDone missing")
+        return false
+    }
+    log("  half-close: onDone fired")
+    // Let the endpoints' async closes drain before the next check
+    // creates new socketpairs: otherwise a pending close can land on
+    // a reused fd number and corrupt the next check's sockets.
+    usleep(100_000)
+    return true
 }
 
 check("relay error teardown finishes") {
