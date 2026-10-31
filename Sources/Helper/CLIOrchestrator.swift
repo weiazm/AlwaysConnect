@@ -25,9 +25,11 @@ import Foundation
 /// - A cookie-fed run that exits without a connect hook discards the
 ///   record and falls back to password once.
 /// - A password-fed run that prints "Login failed." is an
-///   AuthFailure: the engine closes stdin (the child then exits on
-///   its own, as measured) and stops without retrying, so a bad
-///   password can never loop into an account lockout.
+///   AuthFailure: the child exits on its own (stdin was already
+///   closed at feed time, so a re-prompt sees EOF instead of
+///   blocking), and the engine stops without retrying, so a bad
+///   password can never loop into an account lockout. A terminate
+///   fallback 3s after the signal remains as a belt-and-braces.
 ///
 /// Fail-closed: routes and pf are touched only on the connect hook
 /// (load) and on a manual stop (unload + flag file so the script's
@@ -77,6 +79,7 @@ final class CLIOrchestrator {
     private var hookFired = false
     private var sawLoginFailed = false
     private var fedCredential: FedCredential = .password
+    private var stdinClosed = false
     private var cookieFallbackUsed = false
     private var attempts = 0
     private var approvalWorkItem: DispatchWorkItem?
@@ -206,6 +209,7 @@ final class CLIOrchestrator {
         self.inputPipe = inPipe
         self.outputPipe = outPipe
         self.errorPipe = errPipe
+        stdinClosed = false
         _ = driver.authenticated()
         reportState(detail: "spawning openconnect (attempt \(attempts), credential \(fedCredential == .cookie ? "cookie" : "password"))")
         do {
@@ -216,11 +220,19 @@ final class CLIOrchestrator {
             handlePostAuthFailure(detail: "spawn failed: \(error.localizedDescription)")
             return
         }
-        // Feed the credential once; keep the pipe open so a second
-        // prompt blocks instead of failing (the engine decides).
+        // Feed the credential once, then close stdin immediately.
+        // Pipe data already written stays buffered, so the child's
+        // first read still gets the credential; any SECOND read
+        // (a re-prompt after a rejection, or any further stdin wait)
+        // sees EOF and lets the child exit instead of blocking
+        // forever. Measured 2026-10-31: macOS openconnect 9.21 stuck
+        // indefinitely after a CSTP 401 with stdin held open — no
+        // "Login failed." line ever arrives to trigger a later close,
+        // so holding stdin open is a hang, not a decision point.
         if let data = (credentialText + "\n").data(using: .utf8) {
             inPipe.fileHandleForWriting.write(data)
         }
+        closeStdin()
     }
 
     private func openConnectExecutable() -> String {
@@ -541,6 +553,8 @@ final class CLIOrchestrator {
     // MARK: - Helpers
 
     private func closeStdin() {
+        guard !stdinClosed else { return }
+        stdinClosed = true
         inputPipe?.fileHandleForWriting.closeFile()
     }
 

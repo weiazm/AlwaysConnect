@@ -334,7 +334,7 @@ Helper 用 Foundation Process 拉起 openconnect，参数只给必需项，不�
 
 - 全新认证：`openconnect --server=<server> --authgroup=<group> --user=<user> --passwd-on-stdin --script=<vpnc-script> --dump-http-traffic`
 - 会话恢复：把 `--passwd-on-stdin` 换成 `--cookie-on-stdin`，其余相同。
-- 凭据经子进程 stdin 一次性写入，管道在进程存活期间保持打开，停止时关闭；Helper 不把凭据写进命令行参数（ps 可见）或日志。
+- 凭据经子进程 stdin 一次性写入，写入后立即关闭（已写数据仍会送达；第二次读取见 EOF，子进程自行退出，永不因等输入挂住——2026-10-31 实测：macOS openconnect 9.21 在 CSTP 401 后若 stdin 保持打开会永久阻塞）；Helper 不把凭据写进命令行参数（ps 可见）或日志。
 - `--dump-http-traffic` 有两个目的：等批准态的输出启发式（16.5）与隧道 Cookie 捕获（16.3.2）；它的输出是 verbose 进度的超集。除此之外不依赖输出文案做决策。
 
 ### 16.3 退出码与重连决策：先定分类，码值以实测为准
